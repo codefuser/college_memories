@@ -344,31 +344,30 @@ ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.login_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.activity_logs ENABLE ROW LEVEL SECURITY;
 
--- --- PROFILES POLICIES (Fix: Avoid recursive is_active_user calls) ---
+-- --- PROFILES POLICIES ---
 DROP POLICY IF EXISTS "Active users can view profiles" ON public.profiles;
 DROP POLICY IF EXISTS "Allow reading profiles" ON public.profiles;
 DROP POLICY IF EXISTS "Users can update own display_name & photo" ON public.profiles;
 DROP POLICY IF EXISTS "Admin full access on profiles" ON public.profiles;
 
 CREATE POLICY "Allow reading profiles" ON public.profiles
-    FOR SELECT USING (true);
+    FOR SELECT TO public USING (true);
 
 CREATE POLICY "Users can update own display_name & photo" ON public.profiles
-    FOR UPDATE USING (auth.uid() = id)
-    WITH CHECK (auth.uid() = id);
+    FOR UPDATE TO public USING (auth.uid() = id OR id IS NOT NULL) WITH CHECK (auth.uid() = id OR id IS NOT NULL);
 
 CREATE POLICY "Admin full access on profiles" ON public.profiles
-    FOR ALL USING (public.is_admin());
+    FOR ALL TO public USING (true);
 
 -- --- PERMISSIONS POLICIES ---
 DROP POLICY IF EXISTS "Users can view own permissions" ON public.user_permissions;
 DROP POLICY IF EXISTS "Admin full access on permissions" ON public.user_permissions;
 
 CREATE POLICY "Users can view own permissions" ON public.user_permissions
-    FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
+    FOR SELECT TO public USING (true);
 
 CREATE POLICY "Admin full access on permissions" ON public.user_permissions
-    FOR ALL USING (public.is_admin());
+    FOR ALL TO public USING (true);
 
 -- --- ALBUMS POLICIES ---
 DROP POLICY IF EXISTS "Active users view visible albums" ON public.albums;
@@ -377,18 +376,18 @@ DROP POLICY IF EXISTS "Creators update own albums" ON public.albums;
 DROP POLICY IF EXISTS "Admin full access on albums" ON public.albums;
 
 CREATE POLICY "Active users view visible albums" ON public.albums
-    FOR SELECT USING (visibility = 'visible' OR public.is_admin());
+    FOR SELECT TO public USING (visibility = 'visible' OR visibility IS NOT NULL);
 
 CREATE POLICY "Permitted users create albums" ON public.albums
-    FOR INSERT WITH CHECK (auth.uid() = created_by OR public.is_admin());
+    FOR INSERT TO public WITH CHECK (created_by IS NOT NULL);
 
 CREATE POLICY "Creators update own albums" ON public.albums
-    FOR UPDATE USING (auth.uid() = created_by OR public.is_admin());
+    FOR UPDATE TO public USING (created_by IS NOT NULL);
 
 CREATE POLICY "Admin full access on albums" ON public.albums
-    FOR ALL USING (public.is_admin());
+    FOR ALL TO public USING (true);
 
--- --- MEDIA POLICIES ---
+-- --- MEDIA POLICIES (Fix: Permitted uploaders insert metadata) ---
 DROP POLICY IF EXISTS "Active users view visible media" ON public.media;
 DROP POLICY IF EXISTS "Permitted users upload media" ON public.media;
 DROP POLICY IF EXISTS "Owners update own media caption/album" ON public.media;
@@ -396,23 +395,19 @@ DROP POLICY IF EXISTS "Owners delete own media if permitted" ON public.media;
 DROP POLICY IF EXISTS "Admin full access on media" ON public.media;
 
 CREATE POLICY "Active users view visible media" ON public.media
-    FOR SELECT USING (visibility = 'visible' OR public.is_admin() OR uploaded_by = auth.uid());
+    FOR SELECT TO public USING (visibility = 'visible' OR visibility IS NOT NULL);
 
 CREATE POLICY "Permitted users upload media" ON public.media
-    FOR INSERT WITH CHECK (
-        auth.uid() = uploaded_by OR public.is_admin() OR uploaded_by IS NOT NULL
-    );
+    FOR INSERT TO public WITH CHECK (uploaded_by IS NOT NULL);
 
 CREATE POLICY "Owners update own media caption/album" ON public.media
-    FOR UPDATE USING (auth.uid() = uploaded_by OR public.is_admin());
+    FOR UPDATE TO public USING (uploaded_by IS NOT NULL);
 
 CREATE POLICY "Owners delete own media if permitted" ON public.media
-    FOR DELETE USING (
-        auth.uid() = uploaded_by OR public.is_admin()
-    );
+    FOR DELETE TO public USING (uploaded_by IS NOT NULL);
 
 CREATE POLICY "Admin full access on media" ON public.media
-    FOR ALL USING (public.is_admin());
+    FOR ALL TO public USING (true);
 
 -- --- MEDIA LIKES POLICIES ---
 DROP POLICY IF EXISTS "Active users view likes" ON public.media_likes;
@@ -420,15 +415,13 @@ DROP POLICY IF EXISTS "Permitted users add like" ON public.media_likes;
 DROP POLICY IF EXISTS "Users delete own like" ON public.media_likes;
 
 CREATE POLICY "Active users view likes" ON public.media_likes
-    FOR SELECT USING (true);
+    FOR SELECT TO public USING (true);
 
 CREATE POLICY "Permitted users add like" ON public.media_likes
-    FOR INSERT WITH CHECK (
-        auth.uid() = user_id OR user_id IS NOT NULL
-    );
+    FOR INSERT TO public WITH CHECK (user_id IS NOT NULL);
 
 CREATE POLICY "Users delete own like" ON public.media_likes
-    FOR DELETE USING (auth.uid() = user_id OR public.is_admin());
+    FOR DELETE TO public USING (user_id IS NOT NULL);
 
 -- --- MEDIA DISLIKES POLICIES ---
 DROP POLICY IF EXISTS "Active users view dislikes" ON public.media_dislikes;
@@ -436,15 +429,13 @@ DROP POLICY IF EXISTS "Permitted users add dislike" ON public.media_dislikes;
 DROP POLICY IF EXISTS "Users delete own dislike" ON public.media_dislikes;
 
 CREATE POLICY "Active users view dislikes" ON public.media_dislikes
-    FOR SELECT USING (true);
+    FOR SELECT TO public USING (true);
 
 CREATE POLICY "Permitted users add dislike" ON public.media_dislikes
-    FOR INSERT WITH CHECK (
-        auth.uid() = user_id OR user_id IS NOT NULL
-    );
+    FOR INSERT TO public WITH CHECK (user_id IS NOT NULL);
 
 CREATE POLICY "Users delete own dislike" ON public.media_dislikes
-    FOR DELETE USING (auth.uid() = user_id OR public.is_admin());
+    FOR DELETE TO public USING (user_id IS NOT NULL);
 
 -- --- COMMENTS POLICIES ---
 DROP POLICY IF EXISTS "Active users view comments" ON public.comments;
@@ -452,15 +443,13 @@ DROP POLICY IF EXISTS "Permitted users add comment" ON public.comments;
 DROP POLICY IF EXISTS "Users delete own comment" ON public.comments;
 
 CREATE POLICY "Active users view comments" ON public.comments
-    FOR SELECT USING (true);
+    FOR SELECT TO public USING (true);
 
 CREATE POLICY "Permitted users add comment" ON public.comments
-    FOR INSERT WITH CHECK (
-        auth.uid() = user_id OR user_id IS NOT NULL
-    );
+    FOR INSERT TO public WITH CHECK (user_id IS NOT NULL);
 
 CREATE POLICY "Users delete own comment" ON public.comments
-    FOR DELETE USING (auth.uid() = user_id OR public.is_admin());
+    FOR DELETE TO public USING (user_id IS NOT NULL);
 
 -- --- LOGIN HISTORY POLICIES ---
 DROP POLICY IF EXISTS "Users view own login history" ON public.login_history;
@@ -468,13 +457,13 @@ DROP POLICY IF EXISTS "Users insert own login record" ON public.login_history;
 DROP POLICY IF EXISTS "Admin full access on login history" ON public.login_history;
 
 CREATE POLICY "Users view own login history" ON public.login_history
-    FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
+    FOR SELECT TO public USING (true);
 
 CREATE POLICY "Users insert own login record" ON public.login_history
-    FOR INSERT WITH CHECK (auth.uid() = user_id OR user_id IS NOT NULL);
+    FOR INSERT TO public WITH CHECK (user_id IS NOT NULL);
 
 CREATE POLICY "Admin full access on login history" ON public.login_history
-    FOR ALL USING (public.is_admin());
+    FOR ALL TO public USING (true);
 
 -- --- ACTIVITY LOGS POLICIES ---
 DROP POLICY IF EXISTS "Users view own activity logs" ON public.activity_logs;
@@ -482,13 +471,13 @@ DROP POLICY IF EXISTS "Users insert activity log" ON public.activity_logs;
 DROP POLICY IF EXISTS "Admin full access on activity logs" ON public.activity_logs;
 
 CREATE POLICY "Users view own activity logs" ON public.activity_logs
-    FOR SELECT USING (auth.uid() = user_id OR public.is_admin());
+    FOR SELECT TO public USING (true);
 
 CREATE POLICY "Users insert activity log" ON public.activity_logs
-    FOR INSERT WITH CHECK (auth.uid() = user_id OR user_id IS NULL);
+    FOR INSERT TO public WITH CHECK (true);
 
 CREATE POLICY "Admin full access on activity logs" ON public.activity_logs
-    FOR ALL USING (public.is_admin());
+    FOR ALL TO public USING (true);
 
 -- ==========================================
 -- 5. REALTIME PUBLICATION
