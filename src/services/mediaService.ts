@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import type { MediaItem, Album, Comment } from '../types';
+import type { MediaItem, Album, Comment, UserProfile } from '../types';
 
 const generateUniqueId = (): string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -37,7 +37,7 @@ const getCleanPublicUrl = (storagePath: string): string => {
 };
 
 export const mediaService = {
-  // Fetch REAL class media ONLY from Supabase Database & Storage
+  // Fetch REAL class media ONLY from Supabase Database & Storage without brittle joins
   async getMedia(options?: {
     type?: 'image' | 'video' | 'all';
     albumId?: string;
@@ -45,13 +45,10 @@ export const mediaService = {
     currentUserId?: string;
   }): Promise<MediaItem[]> {
     try {
+      // Direct select from public.media without foreign key join dependencies
       let query = supabase
         .from('media')
-        .select(`
-          *,
-          uploader:profiles!uploaded_by (*),
-          album:albums!album_id (*)
-        `)
+        .select('*')
         .order('created_at', { ascending: false });
 
       if (options?.type && options.type !== 'all') {
@@ -69,9 +66,18 @@ export const mediaService = {
       const { data, error } = await query;
 
       if (error || !data || data.length === 0) {
+        console.warn('Supabase media query note:', error?.message || '0 rows');
         return [];
       }
 
+      // Fetch profiles to map uploader names safely
+      const profileMap = new Map<string, UserProfile>();
+      try {
+        const { data: profilesData } = await supabase.from('profiles').select('*');
+        profilesData?.forEach((p) => profileMap.set(p.id, p as UserProfile));
+      } catch (e) {}
+
+      // Fetch user's active likes & dislikes from Supabase DB
       let userLikesSet = new Set<string>();
       let userDislikesSet = new Set<string>();
 
@@ -86,6 +92,7 @@ export const mediaService = {
         dislikesRes.data?.forEach((d) => userDislikesSet.add(d.media_id));
       }
 
+      // Map every single media record to a 100% valid MediaItem with resolved URL
       const resolvedMediaItems = await Promise.all(
         data.map(async (item) => {
           const publicUrl = getCleanPublicUrl(item.storage_path);
@@ -99,7 +106,7 @@ export const mediaService = {
           const normalizedType: 'image' | 'video' =
             item.type === 'video' || item.type?.includes('video') ? 'video' : 'image';
 
-          const uploaderObj = item.uploader || {
+          const uploaderObj = profileMap.get(item.uploaded_by) || {
             id: item.uploaded_by || '00000000-0000-0000-0000-000000000001',
             username: 'classmember',
             display_name: 'Class Member',
@@ -130,7 +137,7 @@ export const mediaService = {
     }
   },
 
-  // Upload file directly to Supabase Storage & insert valid UUID metadata row in Supabase PostgreSQL
+  // Upload file directly to Supabase Storage & insert clean row into Supabase PostgreSQL media table
   async uploadFile(
     file: File,
     type: 'image' | 'video',
@@ -176,15 +183,15 @@ export const mediaService = {
       const normalizedType: 'image' | 'video' =
         file.type.startsWith('video/') || type === 'video' ? 'video' : 'image';
 
-      // Fetch uploader profile safely without triggering RLS permission errors
-      let uploaderProfile = null;
+      // Fetch uploader profile safely
+      let uploaderProfile: UserProfile | null = null;
       try {
         const { data: prof } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', userId)
           .maybeSingle();
-        uploaderProfile = prof;
+        uploaderProfile = prof as UserProfile | null;
       } catch (e) {}
 
       const uploaderDisplayName = uploaderProfile?.display_name || (rawUserId.includes('admin') ? 'Class Admin' : 'Class Member');
@@ -335,10 +342,7 @@ export const mediaService = {
     try {
       const { data, error } = await supabase
         .from('comments')
-        .select(`
-          *,
-          user:profiles!user_id (*)
-        `)
+        .select('*')
         .eq('media_id', mediaId)
         .order('created_at', { ascending: true });
 
@@ -359,10 +363,7 @@ export const mediaService = {
           user_id: userId,
           content: content.trim(),
         })
-        .select(`
-          *,
-          user:profiles!user_id (*)
-        `)
+        .select()
         .single();
 
       if (error || !data) return { error: error?.message || 'Failed to add comment' };
@@ -403,10 +404,7 @@ export const mediaService = {
     try {
       const { data, error } = await supabase
         .from('albums')
-        .select(`
-          *,
-          creator:profiles!created_by (*)
-        `)
+        .select('*')
         .eq('visibility', 'visible')
         .order('created_at', { ascending: false });
 
@@ -444,10 +442,7 @@ export const mediaService = {
           created_by: userId,
           visibility: 'visible',
         })
-        .select(`
-          *,
-          creator:profiles!created_by (*)
-        `)
+        .select()
         .single();
 
       if (error || !data) return { error: error?.message || 'Failed to create album' };
