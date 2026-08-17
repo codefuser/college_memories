@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadCloud, AlertCircle, X, ShieldAlert } from 'lucide-react';
+import { UploadCloud, AlertCircle, X, ShieldAlert, CheckCircle2 } from 'lucide-react';
 import { Modal } from '../common/Modal';
 import type { Album } from '../../types';
 import { mediaService } from '../../services/mediaService';
@@ -27,6 +27,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   const [albums, setAlbums] = useState<Album[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState<string>('Preparing file...');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -48,10 +49,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
   const resetForm = () => {
     setSelectedFile(null);
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+    }
     setPreviewUrl(null);
     setCaption('');
     setSelectedAlbumId('');
     setUploadProgress(0);
+    setUploadStage('Preparing file...');
     setIsUploading(false);
     setErrorMessage(null);
   };
@@ -63,7 +68,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     const isVid = file.type.startsWith('video/');
 
     if (!isImg && !isVid) {
-      setErrorMessage('Unsupported file format. Please upload an Image or Video.');
+      setErrorMessage('Unsupported file format. Please upload an Image (JPG, PNG, WEBP) or Video (MP4, WEBM).');
       return;
     }
 
@@ -142,7 +147,18 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       caption,
       selectedAlbumId || null,
       user.id,
-      (progress) => setUploadProgress(progress)
+      (progress) => {
+        setUploadProgress(progress);
+        if (progress <= 30) {
+          setUploadStage('Preparing upload...');
+        } else if (progress <= 70) {
+          setUploadStage('Uploading to Supabase Storage...');
+        } else if (progress <= 90) {
+          setUploadStage('Saving metadata to database...');
+        } else {
+          setUploadStage('Upload Complete!');
+        }
+      }
     );
 
     setIsUploading(false);
@@ -256,9 +272,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           </div>
 
           {isUploading && (
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs text-slate-400">
-                <span>Uploading memory...</span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs text-slate-300 font-medium">
+                <span className="flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                  {uploadStage}
+                </span>
                 <span>{uploadProgress}%</span>
               </div>
               <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
@@ -283,7 +302,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               disabled={!selectedFile || isUploading}
               className="px-5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 transition-all shadow-md shadow-indigo-600/20"
             >
-              {isUploading ? 'Uploading...' : 'Publish Memory'}
+              {isUploading ? 'Uploading to Supabase...' : 'Publish Memory'}
             </button>
           </div>
         </form>
