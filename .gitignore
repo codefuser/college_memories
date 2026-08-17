@@ -11,6 +11,11 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+
+# Custom Report Directory (Ignored from GitHub)
+report/
+report/*
 
 # Editor directories and files
 .vscode/*
