@@ -3,68 +3,49 @@
 -- Insert Storage Buckets into storage.buckets if not exists
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES 
-    ('media', 'media', false, 104857600, ARRAY['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime']),
-    ('profile-images', 'profile-images', false, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp'])
+    ('media', 'media', true, 104857600, ARRAY['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime']),
+    ('profile-images', 'profile-images', true, 10485760, ARRAY['image/jpeg', 'image/png', 'image/webp'])
 ON CONFLICT (id) DO UPDATE 
-SET public = false,
+SET public = true,
     file_size_limit = EXCLUDED.file_size_limit,
     allowed_mime_types = EXCLUDED.allowed_mime_types;
 
 -- Storage Security Policies for 'media' bucket
-CREATE POLICY "Authenticated active users read media bucket"
+DROP POLICY IF EXISTS "Authenticated active users read media bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Permitted users upload to media bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Owner or admin delete from media bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public read media bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Allow upload to media bucket" ON storage.objects;
+DROP POLICY IF EXISTS "Allow delete media bucket" ON storage.objects;
+
+CREATE POLICY "Allow public read media bucket"
 ON storage.objects FOR SELECT
-TO authenticated
-USING (
-    bucket_id = 'media' 
-    AND public.is_active_user()
-);
+TO public
+USING (bucket_id = 'media');
 
-CREATE POLICY "Permitted users upload to media bucket"
+CREATE POLICY "Allow upload to media bucket"
 ON storage.objects FOR INSERT
-TO authenticated
-WITH CHECK (
-    bucket_id = 'media' 
-    AND public.is_active_user()
-    AND (
-        public.is_admin() 
-        OR EXISTS (
-            SELECT 1 FROM public.user_permissions perm
-            WHERE perm.user_id = auth.uid()
-              AND perm.upload_enabled = true
-              AND (perm.upload_block_until IS NULL OR perm.upload_block_until <= timezone('utc'::text, now()))
-        )
-    )
-);
+TO public
+WITH CHECK (bucket_id = 'media');
 
-CREATE POLICY "Owner or admin delete from media bucket"
+CREATE POLICY "Allow delete media bucket"
 ON storage.objects FOR DELETE
-TO authenticated
-USING (
-    bucket_id = 'media'
-    AND (
-        public.is_admin() 
-        OR (auth.uid() = owner AND public.is_active_user())
-    )
-);
+TO public
+USING (bucket_id = 'media');
 
 -- Storage Security Policies for 'profile-images' bucket
-CREATE POLICY "Authenticated users read profile-images"
+DROP POLICY IF EXISTS "Authenticated users read profile-images" ON storage.objects;
+DROP POLICY IF EXISTS "Users upload own profile image" ON storage.objects;
+DROP POLICY IF EXISTS "Users update own profile image" ON storage.objects;
+DROP POLICY IF EXISTS "Allow public read profile-images" ON storage.objects;
+DROP POLICY IF EXISTS "Allow upload profile-images" ON storage.objects;
+
+CREATE POLICY "Allow public read profile-images"
 ON storage.objects FOR SELECT
-TO authenticated
+TO public
 USING (bucket_id = 'profile-images');
 
-CREATE POLICY "Users upload own profile image"
+CREATE POLICY "Allow upload profile-images"
 ON storage.objects FOR INSERT
-TO authenticated
-WITH CHECK (
-    bucket_id = 'profile-images' 
-    AND public.is_active_user()
-);
-
-CREATE POLICY "Users update own profile image"
-ON storage.objects FOR UPDATE
-TO authenticated
-USING (
-    bucket_id = 'profile-images' 
-    AND (auth.uid() = owner OR public.is_admin())
-);
+TO public
+WITH CHECK (bucket_id = 'profile-images');
