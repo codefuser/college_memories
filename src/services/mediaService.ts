@@ -173,11 +173,7 @@ export const mediaService = {
           album_id: albumId || null,
           visibility: 'visible',
         })
-        .select(`
-          *,
-          uploader:profiles!uploaded_by (*),
-          album:albums!album_id (*)
-        `)
+        .select()
         .single();
 
       if (dbError || !dbData) {
