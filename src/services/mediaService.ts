@@ -1,47 +1,6 @@
 import { supabase } from '../lib/supabase';
 import type { MediaItem, Album, Comment } from '../types';
 
-const SHARED_REGISTRY_KEY = 'class_memories_shared_registry';
-const BROADCAST_CHANNEL_NAME = 'class_memories_sync_channel';
-
-let broadcastChannel: BroadcastChannel | null = null;
-if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-  try {
-    broadcastChannel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
-  } catch (e) {}
-}
-
-const getStoredSharedMedia = (): MediaItem[] => {
-  try {
-    const data = localStorage.getItem(SHARED_REGISTRY_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch (e) {
-    return [];
-  }
-};
-
-const saveSharedMedia = (item: MediaItem) => {
-  try {
-    const existing = getStoredSharedMedia();
-    const filtered = existing.filter((m) => m.id !== item.id);
-    const updated = [item, ...filtered];
-    localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
-
-    if (broadcastChannel) {
-      broadcastChannel.postMessage({ type: 'NEW_MEDIA', mediaItem: item });
-    }
-  } catch (e) {}
-};
-
-const fileToDataUrl = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = (err) => reject(err);
-    reader.readAsDataURL(file);
-  });
-};
-
 const generateUniqueId = (): string => {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -50,16 +9,13 @@ const generateUniqueId = (): string => {
 };
 
 export const mediaService = {
-  // Fetch class media exclusively with normalization and fallback
+  // Fetch REAL class media EXCLUSIVELY from Supabase Database & Storage
   async getMedia(options?: {
     type?: 'image' | 'video' | 'all';
     albumId?: string;
     userId?: string;
     currentUserId?: string;
   }): Promise<MediaItem[]> {
-    const sharedMedia = getStoredSharedMedia();
-    let remoteMedia: MediaItem[] = [];
-
     try {
       let query = supabase
         .from('media')
@@ -83,60 +39,69 @@ export const mediaService = {
         query = query.eq('uploaded_by', options.userId);
       }
 
-      const { data } = await query;
+      const { data, error } = await query;
 
-      if (data && data.length > 0) {
-        remoteMedia = data.map((item) => {
+      if (error || !data || data.length === 0) {
+        return [];
+      }
+
+      // Fetch user's active likes & dislikes from Supabase
+      let userLikesSet = new Set<string>();
+      let userDislikesSet = new Set<string>();
+
+      if (options?.currentUserId) {
+        const [likesRes, dislikesRes] = await Promise.all([
+          supabase.from('media_likes').select('media_id').eq('user_id', options.currentUserId),
+          supabase.from('media_dislikes').select('media_id').eq('user_id', options.currentUserId),
+        ]);
+
+        likesRes.data?.forEach((l) => userLikesSet.add(l.media_id));
+        dislikesRes.data?.forEach((d) => userDislikesSet.add(d.media_id));
+      }
+
+      // Resolve Supabase Storage URLs & count reactions from Supabase DB
+      const resolvedMediaItems = await Promise.all(
+        data.map(async (item) => {
           const { data: urlData } = supabase.storage.from('media').getPublicUrl(item.storage_path);
+          let publicUrl = urlData?.publicUrl || '';
+
+          if (!publicUrl || publicUrl.includes('placeholder')) {
+            const { data: signedData } = await supabase.storage
+              .from('media')
+              .createSignedUrl(item.storage_path, 3600);
+            publicUrl = signedData?.signedUrl || publicUrl;
+          }
+
+          const [likesCountRes, dislikesCountRes, commentsCountRes] = await Promise.all([
+            supabase.from('media_likes').select('id', { count: 'exact', head: true }).eq('media_id', item.id),
+            supabase.from('media_dislikes').select('id', { count: 'exact', head: true }).eq('media_id', item.id),
+            supabase.from('comments').select('id', { count: 'exact', head: true }).eq('media_id', item.id),
+          ]);
+
           const normalizedType: 'image' | 'video' =
             item.type === 'video' || item.type?.includes('video') ? 'video' : 'image';
 
           return {
             ...item,
             type: normalizedType,
-            public_url: urlData?.publicUrl || item.storage_path,
-          };
-        });
-      }
+            public_url: publicUrl,
+            likes_count: likesCountRes.count || 0,
+            dislikes_count: dislikesCountRes.count || 0,
+            comments_count: commentsCountRes.count || 0,
+            user_has_liked: userLikesSet.has(item.id),
+            user_has_disliked: userDislikesSet.has(item.id),
+          } as MediaItem;
+        })
+      );
+
+      return resolvedMediaItems;
     } catch (err) {
-      // Supabase fetch fallback
+      console.error('Failed to get media from Supabase:', err);
+      return [];
     }
-
-    // Merge shared & remote media with deduplication by media.id
-    const seenIds = new Set<string>();
-    const combined: MediaItem[] = [];
-
-    [...sharedMedia, ...remoteMedia].forEach((item) => {
-      if (item && item.id && !seenIds.has(item.id)) {
-        seenIds.add(item.id);
-        const normalizedType: 'image' | 'video' =
-          item.type === 'video' || item.type?.includes('video') ? 'video' : 'image';
-
-        combined.push({
-          ...item,
-          type: normalizedType,
-        });
-      }
-    });
-
-    let result = combined;
-
-    if (options?.type && options.type !== 'all') {
-      result = result.filter((m) => m.type === options.type);
-    }
-
-    if (options?.albumId) {
-      result = result.filter((m) => m.album_id === options.albumId);
-    }
-
-    if (options?.userId) {
-      result = result.filter((m) => m.uploaded_by === options.userId);
-    }
-
-    return result.filter((m) => m.visibility === 'visible');
   },
 
-  // Upload file to Supabase Storage & Database with fail-safe error recovery
+  // Upload file directly to Supabase Storage & insert row into Supabase PostgreSQL media table
   async uploadFile(
     file: File,
     type: 'image' | 'video',
@@ -146,9 +111,8 @@ export const mediaService = {
     onProgress?: (progress: number) => void
   ): Promise<{ data?: MediaItem; error?: string }> {
     try {
-      if (onProgress) onProgress(10);
+      if (onProgress) onProgress(10); // Stage 1: Permission Check
 
-      // Verify user permission
       const { data: perm } = await supabase
         .from('user_permissions')
         .select('*')
@@ -170,11 +134,7 @@ export const mediaService = {
         }
       }
 
-      if (onProgress) onProgress(30);
-
-      const dataUrl = await fileToDataUrl(file);
-
-      if (onProgress) onProgress(70);
+      if (onProgress) onProgress(30); // Stage 2: Storage Upload
 
       const uniqueMediaId = generateUniqueId();
       const year = new Date().getFullYear();
@@ -185,113 +145,104 @@ export const mediaService = {
       const normalizedType: 'image' | 'video' =
         file.type.startsWith('video/') || type === 'video' ? 'video' : 'image';
 
-      // Fetch uploader profile
-      const { data: uploaderProfile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
-
-      const uploaderDisplayName = uploaderProfile?.display_name || (userId.includes('admin') ? 'Class Admin' : 'Class Member');
-
-      let finalPublicUrl = dataUrl;
-
-      // Attempt Supabase Storage Upload
-      const { data: storageData } = await supabase.storage
+      // 1. Upload actual file to Supabase Storage bucket 'media'
+      const { data: storageData, error: storageError } = await supabase.storage
         .from('media')
         .upload(storagePath, file, {
           cacheControl: '3600',
           upsert: false,
           contentType: file.type,
-        })
-        .catch(() => ({ data: null }));
+        });
 
-      if (storageData) {
-        const { data: urlData } = supabase.storage.from('media').getPublicUrl(storageData.path);
-        if (urlData?.publicUrl) {
-          finalPublicUrl = urlData.publicUrl;
-        }
+      if (storageError || !storageData) {
+        console.error('Supabase Storage upload error:', storageError);
+        return { error: `Upload failed. Your file was not saved to Supabase storage: ${storageError?.message}` };
       }
 
-      if (onProgress) onProgress(90);
+      if (onProgress) onProgress(70); // Stage 3: DB Insert
 
-      // Attempt Database Metadata Insert
-      supabase
+      // 2. Insert metadata row into Supabase PostgreSQL 'media' table
+      const { data: dbData, error: dbError } = await supabase
         .from('media')
         .insert({
           id: uniqueMediaId,
           uploaded_by: userId,
           type: normalizedType,
-          storage_path: storageData?.path || storagePath,
+          storage_path: storageData.path,
           caption: caption.trim() || null,
           album_id: albumId || null,
           visibility: 'visible',
-        });
+        })
+        .select(`
+          *,
+          uploader:profiles!uploaded_by (*),
+          album:albums!album_id (*)
+        `)
+        .single();
+
+      if (dbError || !dbData) {
+        console.error('Supabase DB insert error:', dbError);
+        // Clean up storage object if DB insert fails
+        await supabase.storage.from('media').remove([storageData.path]).catch(() => {});
+        return { error: `File uploaded to storage, but database metadata could not be saved: ${dbError?.message}` };
+      }
+
+      if (onProgress) onProgress(90); // Stage 4: URL Resolution
+
+      const { data: urlData } = supabase.storage.from('media').getPublicUrl(dbData.storage_path);
+      let finalUrl = urlData?.publicUrl || '';
+
+      if (!finalUrl || finalUrl.includes('placeholder')) {
+        const { data: signedData } = await supabase.storage
+          .from('media')
+          .createSignedUrl(dbData.storage_path, 3600);
+        finalUrl = signedData?.signedUrl || finalUrl;
+      }
 
       if (onProgress) onProgress(100);
 
-      const newMediaItem: MediaItem = {
-        id: uniqueMediaId,
-        uploaded_by: userId,
+      const createdItem: MediaItem = {
+        ...dbData,
         type: normalizedType,
-        storage_path: storageData?.path || storagePath,
-        public_url: finalPublicUrl,
-        caption: caption.trim() || null,
-        album_id: albumId || null,
-        visibility: 'visible',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        public_url: finalUrl,
         likes_count: 0,
         dislikes_count: 0,
         comments_count: 0,
         user_has_liked: false,
         user_has_disliked: false,
-        uploader: uploaderProfile || {
-          id: userId,
-          username: uploaderDisplayName.toLowerCase().replace(/\s+/g, ''),
-          display_name: uploaderDisplayName,
-          role: userId.includes('admin') ? 'admin' : 'user',
-          status: 'active',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
       };
 
-      // Save into shared registry & broadcast across tabs
-      saveSharedMedia(newMediaItem);
-
-      return { data: newMediaItem };
+      return { data: createdItem };
     } catch (err: any) {
       console.error('Upload exception:', err);
       return { error: err.message || 'File upload failed' };
     }
   },
 
-  // Toggle Like on Supabase database table media_likes
+  // Toggle Like directly in Supabase table media_likes
   async toggleLike(mediaId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const sharedMedia = getStoredSharedMedia();
-      const updated = sharedMedia.map((m) => {
-        if (m.id === mediaId) {
-          const hasLiked = !m.user_has_liked;
-          return {
-            ...m,
-            user_has_liked: hasLiked,
-            likes_count: hasLiked ? (m.likes_count || 0) + 1 : Math.max(0, (m.likes_count || 1) - 1),
-            user_has_disliked: false,
-          };
-        }
-        return m;
-      });
-      localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
-
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({ type: 'LIKE_TOGGLE', mediaId, userId });
-      }
-
-      supabase
+      const { data: existing } = await supabase
         .from('media_likes')
-        .insert({ media_id: mediaId, user_id: userId });
+        .select('id')
+        .eq('media_id', mediaId)
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (existing) {
+        await supabase.from('media_likes').delete().eq('id', existing.id);
+      } else {
+        await supabase
+          .from('media_dislikes')
+          .delete()
+          .eq('media_id', mediaId)
+          .eq('user_id', userId);
+
+        await supabase.from('media_likes').insert({
+          media_id: mediaId,
+          user_id: userId,
+        });
+      }
 
       return { success: true };
     } catch (err: any) {
@@ -299,26 +250,29 @@ export const mediaService = {
     }
   },
 
-  // Toggle Dislike on Supabase database table media_dislikes
+  // Toggle Dislike directly in Supabase table media_dislikes
   async toggleDislike(mediaId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const sharedMedia = getStoredSharedMedia();
-      const updated = sharedMedia.map((m) => {
-        if (m.id === mediaId) {
-          const hasDisliked = !m.user_has_disliked;
-          return {
-            ...m,
-            user_has_disliked: hasDisliked,
-            dislikes_count: hasDisliked ? (m.dislikes_count || 0) + 1 : Math.max(0, (m.dislikes_count || 1) - 1),
-            user_has_liked: false,
-          };
-        }
-        return m;
-      });
-      localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
+      const { data: existing } = await supabase
+        .from('media_dislikes')
+        .select('id')
+        .eq('media_id', mediaId)
+        .eq('user_id', userId)
+        .maybeSingle();
 
-      if (broadcastChannel) {
-        broadcastChannel.postMessage({ type: 'DISLIKE_TOGGLE', mediaId, userId });
+      if (existing) {
+        await supabase.from('media_dislikes').delete().eq('id', existing.id);
+      } else {
+        await supabase
+          .from('media_likes')
+          .delete()
+          .eq('media_id', mediaId)
+          .eq('user_id', userId);
+
+        await supabase.from('media_dislikes').insert({
+          media_id: mediaId,
+          user_id: userId,
+        });
       }
 
       return { success: true };
@@ -327,11 +281,20 @@ export const mediaService = {
     }
   },
 
-  // Comments CRUD on Supabase database table comments
+  // Comments CRUD strictly on Supabase table comments
   async getComments(mediaId: string): Promise<Comment[]> {
     try {
-      const stored = localStorage.getItem(`comments_${mediaId}`);
-      return stored ? JSON.parse(stored) : [];
+      const { data, error } = await supabase
+        .from('comments')
+        .select(`
+          *,
+          user:profiles!user_id (*)
+        `)
+        .eq('media_id', mediaId)
+        .order('created_at', { ascending: true });
+
+      if (error || !data) return [];
+      return data as Comment[];
     } catch (e) {
       return [];
     }
@@ -339,48 +302,45 @@ export const mediaService = {
 
   async addComment(mediaId: string, userId: string, content: string): Promise<{ data?: Comment; error?: string }> {
     try {
-      const existing = await this.getComments(mediaId);
-      const newComment: Comment = {
-        id: `com_${generateUniqueId()}`,
-        media_id: mediaId,
-        user_id: userId,
-        content: content.trim(),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        user: {
-          id: userId,
-          username: 'member',
-          display_name: 'Class Member',
-          role: 'user',
-          status: 'active',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      };
+      const { data, error } = await supabase
+        .from('comments')
+        .insert({
+          media_id: mediaId,
+          user_id: userId,
+          content: content.trim(),
+        })
+        .select(`
+          *,
+          user:profiles!user_id (*)
+        `)
+        .single();
 
-      const updated = [...existing, newComment];
-      localStorage.setItem(`comments_${mediaId}`, JSON.stringify(updated));
-
-      return { data: newComment };
+      if (error || !data) return { error: error?.message || 'Failed to add comment' };
+      return { data: data as Comment };
     } catch (e: any) {
       return { error: e.message };
     }
   },
 
-  async deleteComment(_commentId: string): Promise<{ success: boolean; error?: string }> {
+  async deleteComment(commentId: string): Promise<{ success: boolean; error?: string }> {
     try {
+      const { error } = await supabase.from('comments').delete().eq('id', commentId);
+      if (error) return { success: false, error: error.message };
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
     }
   },
 
-  // Delete Media
-  async deleteMedia(mediaId: string, _storagePath: string): Promise<{ success: boolean; error?: string }> {
+  // Delete Media directly from Supabase Storage & Database
+  async deleteMedia(mediaId: string, storagePath: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const sharedMedia = getStoredSharedMedia();
-      const updated = sharedMedia.filter((m) => m.id !== mediaId);
-      localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
+      const { error: dbError } = await supabase.from('media').delete().eq('id', mediaId);
+      if (dbError) return { success: false, error: dbError.message };
+
+      if (storagePath) {
+        await supabase.storage.from('media').remove([storagePath]).catch(() => {});
+      }
 
       return { success: true };
     } catch (err: any) {
@@ -388,38 +348,36 @@ export const mediaService = {
     }
   },
 
-  // Albums CRUD on Supabase database table albums
+  // Albums CRUD strictly on Supabase table albums
   async getAlbums(): Promise<Album[]> {
     try {
-      return [
-        {
-          id: '11111111-1111-1111-1111-111111111111',
-          title: 'Freshman Orientation',
-          description: 'Memories from our first week together on campus!',
-          visibility: 'visible',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          media_count: 5,
-        },
-        {
-          id: '22222222-2222-2222-2222-222222222222',
-          title: 'Campus Hackathon 2025',
-          description: 'Coding late into the night, coffee cups everywhere.',
-          visibility: 'visible',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          media_count: 8,
-        },
-        {
-          id: '33333333-3333-3333-3333-333333333333',
-          title: 'Class Graduation & Farewell',
-          description: 'Looking back on our journey together.',
-          visibility: 'visible',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          media_count: 12,
-        },
-      ];
+      const { data, error } = await supabase
+        .from('albums')
+        .select(`
+          *,
+          creator:profiles!created_by (*)
+        `)
+        .eq('visibility', 'visible')
+        .order('created_at', { ascending: false });
+
+      if (error || !data) return [];
+
+      const albumsWithCount = await Promise.all(
+        data.map(async (album) => {
+          const { count } = await supabase
+            .from('media')
+            .select('id', { count: 'exact', head: true })
+            .eq('album_id', album.id)
+            .eq('visibility', 'visible');
+
+          return {
+            ...album,
+            media_count: count || 0,
+          } as Album;
+        })
+      );
+
+      return albumsWithCount;
     } catch (e) {
       return [];
     }
@@ -427,16 +385,22 @@ export const mediaService = {
 
   async createAlbum(title: string, description: string, userId: string): Promise<{ data?: Album; error?: string }> {
     try {
-      const newAlbum: Album = {
-        id: `alb_${generateUniqueId()}`,
-        title: title.trim(),
-        description: description.trim() || null,
-        created_by: userId,
-        visibility: 'visible',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-      return { data: newAlbum };
+      const { data, error } = await supabase
+        .from('albums')
+        .insert({
+          title: title.trim(),
+          description: description.trim() || null,
+          created_by: userId,
+          visibility: 'visible',
+        })
+        .select(`
+          *,
+          creator:profiles!created_by (*)
+        `)
+        .single();
+
+      if (error || !data) return { error: error?.message || 'Failed to create album' };
+      return { data: data as Album };
     } catch (e: any) {
       return { error: e.message };
     }
