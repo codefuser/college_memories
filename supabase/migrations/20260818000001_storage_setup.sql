@@ -25,7 +25,15 @@ TO authenticated
 WITH CHECK (
     bucket_id = 'media' 
     AND public.is_active_user()
-    -- Subpath or folder structure check if applicable
+    AND (
+        public.is_admin() 
+        OR EXISTS (
+            SELECT 1 FROM public.user_permissions perm
+            WHERE perm.user_id = auth.uid()
+              AND perm.upload_enabled = true
+              AND (perm.upload_block_until IS NULL OR perm.upload_block_until <= timezone('utc'::text, now()))
+        )
+    )
 );
 
 CREATE POLICY "Owner or admin delete from media bucket"

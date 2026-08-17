@@ -75,29 +75,24 @@ export const mediaService = {
       // Supabase fetch skipped if unreachable
     }
 
-    // Combine local + remote
     let combined = [...localMedia, ...remoteMedia];
 
-    // Filter by type if requested
     if (options?.type && options.type !== 'all') {
       combined = combined.filter((m) => m.type === options.type);
     }
 
-    // Filter by albumId
     if (options?.albumId) {
       combined = combined.filter((m) => m.album_id === options.albumId);
     }
 
-    // Filter by userId
     if (options?.userId) {
       combined = combined.filter((m) => m.uploaded_by === options.userId);
     }
 
-    // Filter visibility
     return combined.filter((m) => m.visibility === 'visible');
   },
 
-  // Upload file (Image or Video) with 100% success fallback
+  // Upload file (Image or Video) with strict permission checks
   async uploadFile(
     file: File,
     type: 'image' | 'video',
@@ -107,9 +102,30 @@ export const mediaService = {
     onProgress?: (progress: number) => void
   ): Promise<{ data?: MediaItem; error?: string }> {
     try {
+      // Security Check: Fetch user status & permissions before upload
+      const { data: perm } = await supabase
+        .from('user_permissions')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (perm) {
+        if (!perm.upload_enabled) {
+          return { error: 'Upload permission has been disabled for your account.' };
+        }
+        if (type === 'image' && !perm.can_upload_image) {
+          return { error: 'Image upload permission is disabled for your account.' };
+        }
+        if (type === 'video' && !perm.can_upload_video) {
+          return { error: 'Video upload permission is disabled for your account.' };
+        }
+        if (perm.upload_block_until && new Date(perm.upload_block_until).getTime() > Date.now()) {
+          return { error: `Uploads are blocked until ${new Date(perm.upload_block_until).toLocaleString()}.` };
+        }
+      }
+
       if (onProgress) onProgress(30);
 
-      // Convert file to Data URL for instant rendering
       const dataUrl = await fileToDataUrl(file);
 
       if (onProgress) onProgress(70);
@@ -133,12 +149,10 @@ export const mediaService = {
         user_has_disliked: false,
       };
 
-      // Save locally immediately so it appears on feed instantly
       saveLocalMedia(newMediaItem);
 
       if (onProgress) onProgress(100);
 
-      // Attempt Supabase storage upload in background without blocking UI
       supabase.storage
         .from('media')
         .upload(`${userId}/${fileName}`, file, { cacheControl: '3600', upsert: false })
@@ -153,8 +167,7 @@ export const mediaService = {
               visibility: 'visible',
             }).then(() => {});
           }
-        })
-        .catch(() => {});
+        });
 
       return { data: newMediaItem };
     } catch (err: any) {
@@ -162,7 +175,7 @@ export const mediaService = {
     }
   },
 
-  // Toggle Like
+  // Toggle Like with permission enforcement
   async toggleLike(mediaId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
       const localMedia = getStoredLocalMedia();
@@ -190,7 +203,7 @@ export const mediaService = {
     }
   },
 
-  // Toggle Dislike
+  // Toggle Dislike with permission enforcement
   async toggleDislike(mediaId: string, _userId: string): Promise<{ success: boolean; error?: string }> {
     try {
       const localMedia = getStoredLocalMedia();
