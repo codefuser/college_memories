@@ -47,7 +47,7 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setAlbumsList(albums);
   }, []);
 
-  // Fetch Media with caching & background refresh
+  // Fetch Media with caching
   const fetchMedia = useCallback(async (force = false) => {
     if (!hasInitialLoaded.current || force) {
       setLoading(true);
@@ -76,7 +76,32 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [user?.id, fetchMedia, fetchAlbums]);
 
-  // Application-level Global Realtime Listener (ONE listener per session)
+  // Cross-Tab BroadcastChannel Realtime Sync Handler
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('BroadcastChannel' in window)) return;
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      bc = new BroadcastChannel('class_memories_sync_channel');
+      bc.onmessage = (event) => {
+        const { type, mediaItem, mediaId } = event.data || {};
+        if (type === 'NEW_MEDIA' && mediaItem && mediaItem.id) {
+          setMediaList((prev) => {
+            if (prev.some((m) => m.id === mediaItem.id)) return prev;
+            return [mediaItem, ...prev];
+          });
+        } else if ((type === 'LIKE_TOGGLE' || type === 'DISLIKE_TOGGLE') && mediaId) {
+          fetchMedia(false);
+        }
+      };
+    } catch (e) {}
+
+    return () => {
+      if (bc) bc.close();
+    };
+  }, [fetchMedia]);
+
+  // Application-level Global Supabase Realtime Listener (ONE listener per session)
   useEffect(() => {
     if (!user) return;
 
@@ -88,7 +113,6 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         async (payload) => {
           const newRow = payload.new as any;
           if (newRow && newRow.visibility === 'visible') {
-            // Fetch uploader info
             const { data: uploader } = await supabase
               .from('profiles')
               .select('*')
@@ -146,15 +170,15 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, [user?.id, fetchMedia]);
 
-  // Optimistic Like Handler
-  const handleLikeToggle = async (mediaId: string) => {
-    if (!user || pendingReactions.current.has(mediaId)) return;
-    pendingReactions.current.add(mediaId);
+  // Optimistic Like Handler strictly isolated to target media.id
+  const handleLikeToggle = async (targetMediaId: string) => {
+    if (!user || pendingReactions.current.has(targetMediaId)) return;
+    pendingReactions.current.add(targetMediaId);
 
-    // Optimistic UI state mutation
+    // Optimistic UI state mutation strictly on item.id === targetMediaId
     setMediaList((prev) =>
       prev.map((item) => {
-        if (item.id === mediaId) {
+        if (item.id === targetMediaId) {
           const currentlyLiked = item.user_has_liked;
           const newLiked = !currentlyLiked;
           const currentlyDisliked = item.user_has_disliked;
@@ -175,14 +199,14 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             dislikes_count: newDislikesCount,
           };
         }
-        return item;
+        return item; // Unchanged for all other items
       })
     );
 
     // Update selectedMedia lightbox state if open
-    if (selectedMedia?.id === mediaId) {
+    if (selectedMedia?.id === targetMediaId) {
       setSelectedMedia((prev) => {
-        if (!prev) return null;
+        if (!prev || prev.id !== targetMediaId) return prev;
         const currentlyLiked = prev.user_has_liked;
         const newLiked = !currentlyLiked;
         const currentlyDisliked = prev.user_has_disliked;
@@ -197,19 +221,18 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
     }
 
-    await mediaService.toggleLike(mediaId, user.id);
-    pendingReactions.current.delete(mediaId);
+    await mediaService.toggleLike(targetMediaId, user.id);
+    pendingReactions.current.delete(targetMediaId);
   };
 
-  // Optimistic Dislike Handler
-  const handleDislikeToggle = async (mediaId: string) => {
-    if (!user || pendingReactions.current.has(mediaId)) return;
-    pendingReactions.current.add(mediaId);
+  // Optimistic Dislike Handler strictly isolated to target media.id
+  const handleDislikeToggle = async (targetMediaId: string) => {
+    if (!user || pendingReactions.current.has(targetMediaId)) return;
+    pendingReactions.current.add(targetMediaId);
 
-    // Optimistic UI state mutation
     setMediaList((prev) =>
       prev.map((item) => {
-        if (item.id === mediaId) {
+        if (item.id === targetMediaId) {
           const currentlyDisliked = item.user_has_disliked;
           const newDisliked = !currentlyDisliked;
           const currentlyLiked = item.user_has_liked;
@@ -230,13 +253,13 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             likes_count: newLikesCount,
           };
         }
-        return item;
+        return item; // Unchanged for all other items
       })
     );
 
-    if (selectedMedia?.id === mediaId) {
+    if (selectedMedia?.id === targetMediaId) {
       setSelectedMedia((prev) => {
-        if (!prev) return null;
+        if (!prev || prev.id !== targetMediaId) return prev;
         const currentlyDisliked = prev.user_has_disliked;
         const newDisliked = !currentlyDisliked;
         const currentlyLiked = prev.user_has_liked;
@@ -251,12 +274,12 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       });
     }
 
-    await mediaService.toggleDislike(mediaId, user.id);
-    pendingReactions.current.delete(mediaId);
+    await mediaService.toggleDislike(targetMediaId, user.id);
+    pendingReactions.current.delete(targetMediaId);
   };
 
   const handleUploadSuccess = (newMedia?: MediaItem) => {
-    if (newMedia) {
+    if (newMedia && newMedia.id) {
       setMediaList((prev) => {
         if (prev.some((m) => m.id === newMedia.id)) return prev;
         return [newMedia, ...prev];

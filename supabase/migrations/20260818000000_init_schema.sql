@@ -455,3 +455,11 @@ CREATE POLICY "Users insert activity log" ON public.activity_logs
 
 CREATE POLICY "Admin full access on activity logs" ON public.activity_logs
     FOR ALL USING (public.is_admin());
+
+-- ==========================================
+-- 5. REALTIME PUBLICATION
+-- ==========================================
+ALTER PUBLICATION supabase_realtime ADD TABLE public.media;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.media_likes;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.media_dislikes;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.comments;

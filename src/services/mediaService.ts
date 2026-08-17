@@ -1,6 +1,16 @@
 import { supabase } from '../lib/supabase';
 import type { MediaItem, Album, Comment } from '../types';
 
+const BROADCAST_CHANNEL_NAME = 'class_memories_sync_channel';
+
+// Create or get broadcast channel safely for cross-tab realtime sync
+let broadcastChannel: BroadcastChannel | null = null;
+if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+  try {
+    broadcastChannel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
+  } catch (e) {}
+}
+
 const getStoredLocalMedia = (): MediaItem[] => {
   try {
     const data = localStorage.getItem('class_memories_local_media');
@@ -13,7 +23,13 @@ const getStoredLocalMedia = (): MediaItem[] => {
 const saveLocalMedia = (item: MediaItem) => {
   try {
     const existing = getStoredLocalMedia();
-    localStorage.setItem('class_memories_local_media', JSON.stringify([item, ...existing]));
+    const filtered = existing.filter((m) => m.id !== item.id);
+    localStorage.setItem('class_memories_local_media', JSON.stringify([item, ...filtered]));
+
+    // Broadcast across windows/tabs immediately
+    if (broadcastChannel) {
+      broadcastChannel.postMessage({ type: 'NEW_MEDIA', mediaItem: item });
+    }
   } catch (e) {}
 };
 
@@ -24,6 +40,13 @@ const fileToDataUrl = (file: File): Promise<string> => {
     reader.onerror = (err) => reject(err);
     reader.readAsDataURL(file);
   });
+};
+
+const generateUniqueId = (): string => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `med_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${Math.random().toString(36).substring(2, 9)}`;
 };
 
 export const mediaService = {
@@ -72,27 +95,38 @@ export const mediaService = {
         });
       }
     } catch (err) {
-      // Supabase fetch skipped if unreachable
+      // Supabase fetch fallback
     }
 
-    let combined = [...localMedia, ...remoteMedia];
+    // Merge local & remote ensuring uniqueness by media.id
+    const seenIds = new Set<string>();
+    const combined: MediaItem[] = [];
+
+    [...localMedia, ...remoteMedia].forEach((item) => {
+      if (item && item.id && !seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        combined.push(item);
+      }
+    });
+
+    let result = combined;
 
     if (options?.type && options.type !== 'all') {
-      combined = combined.filter((m) => m.type === options.type);
+      result = result.filter((m) => m.type === options.type);
     }
 
     if (options?.albumId) {
-      combined = combined.filter((m) => m.album_id === options.albumId);
+      result = result.filter((m) => m.album_id === options.albumId);
     }
 
     if (options?.userId) {
-      combined = combined.filter((m) => m.uploaded_by === options.userId);
+      result = result.filter((m) => m.uploaded_by === options.userId);
     }
 
-    return combined.filter((m) => m.visibility === 'visible');
+    return result.filter((m) => m.visibility === 'visible');
   },
 
-  // Upload file (Image or Video) with strict permission checks
+  // Upload file (Image or Video) with guaranteed unique media.id & instant cross-session sync
   async uploadFile(
     file: File,
     type: 'image' | 'video',
@@ -102,7 +136,7 @@ export const mediaService = {
     onProgress?: (progress: number) => void
   ): Promise<{ data?: MediaItem; error?: string }> {
     try {
-      // Security Check: Fetch user status & permissions before upload
+      // Security Check: Fetch user permissions
       const { data: perm } = await supabase
         .from('user_permissions')
         .select('*')
@@ -130,12 +164,24 @@ export const mediaService = {
 
       if (onProgress) onProgress(70);
 
-      const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}`;
+      const uniqueMediaId = generateUniqueId();
+      const fileName = `${Date.now()}_${uniqueMediaId.slice(0, 8)}`;
+      const storagePath = `${userId}/${fileName}`;
+
+      // Fetch uploader info
+      const { data: uploaderProfile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+
+      const uploaderDisplayName = uploaderProfile?.display_name || (userId.includes('admin') ? 'Class Admin' : 'Class Member');
+
       const newMediaItem: MediaItem = {
-        id: `med_${fileName}`,
+        id: uniqueMediaId,
         uploaded_by: userId,
         type,
-        storage_path: `${userId}/${fileName}`,
+        storage_path: storagePath,
         public_url: dataUrl,
         caption: caption.trim() || null,
         album_id: albumId || null,
@@ -147,18 +193,30 @@ export const mediaService = {
         comments_count: 0,
         user_has_liked: false,
         user_has_disliked: false,
+        uploader: uploaderProfile || {
+          id: userId,
+          username: uploaderDisplayName.toLowerCase().replace(/\s+/g, ''),
+          display_name: uploaderDisplayName,
+          role: userId.includes('admin') ? 'admin' : 'user',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
       };
 
+      // Save locally & broadcast across tabs
       saveLocalMedia(newMediaItem);
 
       if (onProgress) onProgress(100);
 
+      // Async Supabase Storage & DB Insert
       supabase.storage
         .from('media')
-        .upload(`${userId}/${fileName}`, file, { cacheControl: '3600', upsert: false })
+        .upload(storagePath, file, { cacheControl: '3600', upsert: false })
         .then(({ data: stData }) => {
           if (stData) {
             supabase.from('media').insert({
+              id: uniqueMediaId,
               uploaded_by: userId,
               type,
               storage_path: stData.path,
@@ -175,7 +233,7 @@ export const mediaService = {
     }
   },
 
-  // Toggle Like with permission enforcement
+  // Toggle Like isolated strictly by media.id + user.id
   async toggleLike(mediaId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
       const localMedia = getStoredLocalMedia();
@@ -189,9 +247,13 @@ export const mediaService = {
             user_has_disliked: false,
           };
         }
-        return m;
+        return m; // Strict isolation: only m.id === mediaId is changed
       });
       localStorage.setItem('class_memories_local_media', JSON.stringify(updated));
+
+      if (broadcastChannel) {
+        broadcastChannel.postMessage({ type: 'LIKE_TOGGLE', mediaId, userId });
+      }
 
       supabase
         .from('media_likes')
@@ -203,8 +265,8 @@ export const mediaService = {
     }
   },
 
-  // Toggle Dislike with permission enforcement
-  async toggleDislike(mediaId: string, _userId: string): Promise<{ success: boolean; error?: string }> {
+  // Toggle Dislike isolated strictly by media.id + user.id
+  async toggleDislike(mediaId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
       const localMedia = getStoredLocalMedia();
       const updated = localMedia.map((m) => {
@@ -217,9 +279,13 @@ export const mediaService = {
             user_has_liked: false,
           };
         }
-        return m;
+        return m; // Strict isolation: only m.id === mediaId is changed
       });
       localStorage.setItem('class_memories_local_media', JSON.stringify(updated));
+
+      if (broadcastChannel) {
+        broadcastChannel.postMessage({ type: 'DISLIKE_TOGGLE', mediaId, userId });
+      }
 
       return { success: true };
     } catch (err: any) {
@@ -241,7 +307,7 @@ export const mediaService = {
     try {
       const existing = await this.getComments(mediaId);
       const newComment: Comment = {
-        id: `com_${Date.now()}`,
+        id: `com_${generateUniqueId()}`,
         media_id: mediaId,
         user_id: userId,
         content: content.trim(),
@@ -328,7 +394,7 @@ export const mediaService = {
   async createAlbum(title: string, description: string, userId: string): Promise<{ data?: Album; error?: string }> {
     try {
       const newAlbum: Album = {
-        id: `alb_${Date.now()}`,
+        id: `alb_${generateUniqueId()}`,
         title: title.trim(),
         description: description.trim() || null,
         created_by: userId,
