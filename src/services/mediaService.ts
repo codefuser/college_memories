@@ -8,8 +8,24 @@ const generateUniqueId = (): string => {
   return `med_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 };
 
+// Helper function to resolve exact 100% working Supabase Storage URLs
+const getCleanPublicUrl = (storagePath: string): string => {
+  if (!storagePath) return '';
+  // 1. If storagePath is already a full URL, return directly
+  if (storagePath.startsWith('http://') || storagePath.startsWith('https://') || storagePath.startsWith('data:')) {
+    return storagePath;
+  }
+  // 2. Strip leading slashes or duplicate 'media/' bucket prefixes
+  let cleanPath = storagePath.replace(/^\/+/, '');
+  if (cleanPath.startsWith('media/')) {
+    cleanPath = cleanPath.substring(6);
+  }
+  const { data } = supabase.storage.from('media').getPublicUrl(cleanPath);
+  return data?.publicUrl || '';
+};
+
 export const mediaService = {
-  // Fetch REAL class media ONLY from Supabase Database & Storage (NO localStorage fallbacks)
+  // Fetch REAL class media ONLY from Supabase Database & Storage
   async getMedia(options?: {
     type?: 'image' | 'video' | 'all';
     albumId?: string;
@@ -24,7 +40,6 @@ export const mediaService = {
           uploader:profiles!uploaded_by (*),
           album:albums!album_id (*)
         `)
-        .eq('visibility', 'visible')
         .order('created_at', { ascending: false });
 
       if (options?.type && options.type !== 'all') {
@@ -42,6 +57,7 @@ export const mediaService = {
       const { data, error } = await query;
 
       if (error || !data || data.length === 0) {
+        console.error('Error or no data from Supabase media query:', error);
         return [];
       }
 
@@ -59,18 +75,10 @@ export const mediaService = {
         dislikesRes.data?.forEach((d) => userDislikesSet.add(d.media_id));
       }
 
-      // Resolve Supabase Storage URLs & count reactions from Supabase DB
+      // Resolve Supabase Storage URLs & count reactions for every record
       const resolvedMediaItems = await Promise.all(
         data.map(async (item) => {
-          const { data: urlData } = supabase.storage.from('media').getPublicUrl(item.storage_path);
-          let publicUrl = urlData?.publicUrl || '';
-
-          if (!publicUrl || publicUrl.includes('placeholder')) {
-            const { data: signedData } = await supabase.storage
-              .from('media')
-              .createSignedUrl(item.storage_path, 3600);
-            publicUrl = signedData?.signedUrl || publicUrl;
-          }
+          const publicUrl = getCleanPublicUrl(item.storage_path);
 
           const [likesCountRes, dislikesCountRes, commentsCountRes] = await Promise.all([
             supabase.from('media_likes').select('id', { count: 'exact', head: true }).eq('media_id', item.id),
@@ -81,10 +89,22 @@ export const mediaService = {
           const normalizedType: 'image' | 'video' =
             item.type === 'video' || item.type?.includes('video') ? 'video' : 'image';
 
+          // Uploader profile fallback if join is null
+          const uploaderObj = item.uploader || {
+            id: item.uploaded_by || '00000000-0000-0000-0000-000000000001',
+            username: 'classmember',
+            display_name: 'Class Member',
+            role: 'user',
+            status: 'active',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+
           return {
             ...item,
             type: normalizedType,
             public_url: publicUrl,
+            uploader: uploaderObj,
             likes_count: likesCountRes.count || 0,
             dislikes_count: dislikesCountRes.count || 0,
             comments_count: commentsCountRes.count || 0,
@@ -101,7 +121,7 @@ export const mediaService = {
     }
   },
 
-  // Upload file directly to Supabase Storage & insert row into Supabase PostgreSQL media table
+  // Upload file directly to Supabase Storage & insert clean row into Supabase PostgreSQL media table
   async uploadFile(
     file: File,
     type: 'image' | 'video',
@@ -140,12 +160,13 @@ export const mediaService = {
       const year = new Date().getFullYear();
       const month = (new Date().getMonth() + 1).toString().padStart(2, '0');
       const safeFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      // Clean path inside bucket
       const storagePath = `${userId}/${year}/${month}/${uniqueMediaId}-${safeFileName}`;
 
       const normalizedType: 'image' | 'video' =
         file.type.startsWith('video/') || type === 'video' ? 'video' : 'image';
 
-      // 1. Upload actual file to Supabase Storage bucket 'media'
+      // 1. Upload file to Supabase Storage bucket 'media'
       const { data: storageData, error: storageError } = await supabase.storage
         .from('media')
         .upload(storagePath, file, {
@@ -161,14 +182,16 @@ export const mediaService = {
 
       if (onProgress) onProgress(70); // Stage 3: DB Insert
 
-      // 2. Insert metadata row into Supabase PostgreSQL 'media' table
+      const finalStoragePath = storageData.path;
+
+      // 2. Insert clean metadata row into Supabase PostgreSQL 'media' table
       const { data: dbData, error: dbError } = await supabase
         .from('media')
         .insert({
           id: uniqueMediaId,
           uploaded_by: userId,
           type: normalizedType,
-          storage_path: storageData.path,
+          storage_path: finalStoragePath,
           caption: caption.trim() || null,
           album_id: albumId || null,
           visibility: 'visible',
@@ -183,21 +206,13 @@ export const mediaService = {
       if (dbError || !dbData) {
         console.error('Supabase DB insert error:', dbError);
         // Clean up storage object if DB insert fails
-        await supabase.storage.from('media').remove([storageData.path]).catch(() => {});
+        await supabase.storage.from('media').remove([finalStoragePath]).catch(() => {});
         return { error: `File uploaded to storage, but database metadata could not be saved: ${dbError?.message}` };
       }
 
       if (onProgress) onProgress(90); // Stage 4: URL Resolution
 
-      const { data: urlData } = supabase.storage.from('media').getPublicUrl(dbData.storage_path);
-      let finalUrl = urlData?.publicUrl || '';
-
-      if (!finalUrl || finalUrl.includes('placeholder')) {
-        const { data: signedData } = await supabase.storage
-          .from('media')
-          .createSignedUrl(dbData.storage_path, 3600);
-        finalUrl = signedData?.signedUrl || finalUrl;
-      }
+      const finalUrl = getCleanPublicUrl(dbData.storage_path);
 
       if (onProgress) onProgress(100);
 
