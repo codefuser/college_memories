@@ -1,64 +1,22 @@
-import React, { useEffect, useState } from 'react';
-import { mediaService } from '../services/mediaService';
-import type { MediaItem } from '../types';
+import React from 'react';
+import { useMedia } from '../context/MediaContext';
 import { MediaGrid } from '../components/media/MediaGrid';
 import { MediaDetailModal } from '../components/media/MediaDetailModal';
-import { UploadModal } from '../components/media/UploadModal';
-import { useAuth } from '../context/AuthContext';
 import { Flame } from 'lucide-react';
 
-interface DashboardPageProps {
-  searchQuery: string;
-  isUploadOpen: boolean;
-  onCloseUpload: () => void;
-  onOpenUpload?: () => void;
-}
-
-export const DashboardPage: React.FC<DashboardPageProps> = ({
-  searchQuery,
-  isUploadOpen,
-  onCloseUpload,
-}) => {
-  const { user } = useAuth();
-  const [mediaList, setMediaList] = useState<MediaItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'image' | 'video'>('all');
-  const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
-
-  const fetchMedia = async () => {
-    setLoading(true);
-    const data = await mediaService.getMedia({
-      type: activeFilter,
-      currentUserId: user?.id,
-    });
-    setMediaList(data);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchMedia();
-
-    // Subscribe to Realtime Updates
-    const unsubscribe = mediaService.subscribeToMediaChanges(() => {
-      fetchMedia();
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, [activeFilter, user?.id]);
-
-  const handleLikeToggle = async (mediaId: string) => {
-    if (!user) return;
-    await mediaService.toggleLike(mediaId, user.id);
-    fetchMedia();
-  };
-
-  const handleDislikeToggle = async (mediaId: string) => {
-    if (!user) return;
-    await mediaService.toggleDislike(mediaId, user.id);
-    fetchMedia();
-  };
+export const DashboardPage: React.FC = () => {
+  const {
+    mediaList,
+    loading,
+    activeFilter,
+    searchQuery,
+    selectedMedia,
+    setActiveFilter,
+    setSelectedMedia,
+    handleLikeToggle,
+    handleDislikeToggle,
+    handleDeleteMedia,
+  } = useMedia();
 
   // Filter media by search query
   const filteredMedia = mediaList.filter((m) => {
@@ -100,23 +58,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         onDislikeToggle={handleDislikeToggle}
       />
 
-      {/* Modals */}
+      {/* Lightbox Modal */}
       <MediaDetailModal
         media={selectedMedia}
         isOpen={Boolean(selectedMedia)}
         onClose={() => setSelectedMedia(null)}
         onLikeToggle={handleLikeToggle}
         onDislikeToggle={handleDislikeToggle}
-        onMediaDeleted={() => {
-          setSelectedMedia(null);
-          fetchMedia();
-        }}
-      />
-
-      <UploadModal
-        isOpen={isUploadOpen}
-        onClose={onCloseUpload}
-        onUploadSuccess={fetchMedia}
+        onMediaDeleted={(mediaId) => handleDeleteMedia(mediaId)}
       />
     </div>
   );

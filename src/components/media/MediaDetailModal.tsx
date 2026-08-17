@@ -167,7 +167,12 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             {/* Reaction Bar */}
             <div className="flex items-center space-x-3 py-2 border-y border-slate-800">
               <button
-                onClick={() => onLikeToggle(media.id)}
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onLikeToggle(media.id);
+                }}
                 className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                   media.user_has_liked
                     ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
@@ -179,7 +184,12 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               </button>
 
               <button
-                onClick={() => onDislikeToggle(media.id)}
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onDislikeToggle(media.id);
+                }}
                 className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                   media.user_has_disliked
                     ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'

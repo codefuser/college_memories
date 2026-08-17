@@ -1,38 +1,30 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { mediaService } from '../services/mediaService';
+import { useMedia } from '../context/MediaContext';
 import { adminService } from '../services/adminService';
-import type { MediaItem } from '../types';
 import { MediaGrid } from '../components/media/MediaGrid';
 import { MediaDetailModal } from '../components/media/MediaDetailModal';
 import { User, Shield, Calendar, Image, CheckCircle2, XCircle, Edit3 } from 'lucide-react';
 
 export const ProfilePage: React.FC = () => {
   const { user, profile, permissions, isAdmin, refreshProfile } = useAuth();
-  const [userMedia, setUserMedia] = useState<MediaItem[]>([]);
-  const [loadingMedia, setLoadingMedia] = useState(true);
-  const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
+  const {
+    mediaList,
+    selectedMedia,
+    setSelectedMedia,
+    handleLikeToggle,
+    handleDislikeToggle,
+    handleDeleteMedia,
+  } = useMedia();
+
   const [isEditing, setIsEditing] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.display_name || '');
   const [photoUrl, setPhotoUrl] = useState(profile?.profile_photo || '');
   const [isSaving, setIsSaving] = useState(false);
 
-  useEffect(() => {
-    if (user) {
-      fetchUserMedia();
-    }
-  }, [user]);
-
-  const fetchUserMedia = async () => {
-    if (!user) return;
-    setLoadingMedia(true);
-    const data = await mediaService.getMedia({
-      userId: user.id,
-      currentUserId: user.id,
-    });
-    setUserMedia(data);
-    setLoadingMedia(false);
-  };
+  const userMedia = user
+    ? mediaList.filter((m) => m.uploaded_by === user.id)
+    : [];
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,6 +87,7 @@ export const ProfilePage: React.FC = () => {
           </div>
 
           <button
+            type="button"
             onClick={() => setIsEditing(!isEditing)}
             className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition-all border border-slate-700/60"
           >
@@ -183,18 +176,12 @@ export const ProfilePage: React.FC = () => {
         <h3 className="text-lg font-bold text-white tracking-tight">My Shared Memories</h3>
         <MediaGrid
           mediaList={userMedia}
-          loading={loadingMedia}
+          loading={false}
           activeFilter="all"
           onFilterChange={() => {}}
           onSelectMedia={(m) => setSelectedMedia(m)}
-          onLikeToggle={async (mediaId) => {
-            if (user) await mediaService.toggleLike(mediaId, user.id);
-            fetchUserMedia();
-          }}
-          onDislikeToggle={async (mediaId) => {
-            if (user) await mediaService.toggleDislike(mediaId, user.id);
-            fetchUserMedia();
-          }}
+          onLikeToggle={handleLikeToggle}
+          onDislikeToggle={handleDislikeToggle}
         />
       </div>
 
@@ -202,18 +189,9 @@ export const ProfilePage: React.FC = () => {
         media={selectedMedia}
         isOpen={Boolean(selectedMedia)}
         onClose={() => setSelectedMedia(null)}
-        onLikeToggle={async (mediaId) => {
-          if (user) await mediaService.toggleLike(mediaId, user.id);
-          fetchUserMedia();
-        }}
-        onDislikeToggle={async (mediaId) => {
-          if (user) await mediaService.toggleDislike(mediaId, user.id);
-          fetchUserMedia();
-        }}
-        onMediaDeleted={() => {
-          setSelectedMedia(null);
-          fetchUserMedia();
-        }}
+        onLikeToggle={handleLikeToggle}
+        onDislikeToggle={handleDislikeToggle}
+        onMediaDeleted={(mediaId) => handleDeleteMedia(mediaId)}
       />
     </div>
   );

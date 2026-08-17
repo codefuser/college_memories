@@ -101,9 +101,11 @@ export const MediaCard: React.FC<MediaCardProps> = ({
         {/* Reaction Bar */}
         <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-slate-400">
           <div className="flex items-center space-x-2">
-            {/* Like */}
+            {/* Like Button */}
             <button
+              type="button"
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 onLikeToggle(media.id);
               }}
@@ -117,9 +119,11 @@ export const MediaCard: React.FC<MediaCardProps> = ({
               <span>{media.likes_count || 0}</span>
             </button>
 
-            {/* Dislike */}
+            {/* Dislike Button */}
             <button
+              type="button"
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 onDislikeToggle(media.id);
               }}
@@ -136,7 +140,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({
 
           {/* Comment Count */}
           <button
-            onClick={() => onSelect(media)}
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onSelect(media);
+            }}
             className="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-medium text-slate-400 hover:text-indigo-400 hover:bg-slate-800 transition-all"
           >
             <MessageCircle className="w-3.5 h-3.5" />

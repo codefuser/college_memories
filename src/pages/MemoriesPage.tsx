@@ -1,46 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { mediaService } from '../services/mediaService';
-import type { MediaItem } from '../types';
+import React from 'react';
+import { useMedia } from '../context/MediaContext';
 import { MediaGrid } from '../components/media/MediaGrid';
 import { MediaDetailModal } from '../components/media/MediaDetailModal';
-import { useAuth } from '../context/AuthContext';
 
-interface MemoriesPageProps {
-  searchQuery: string;
-}
-
-export const MemoriesPage: React.FC<MemoriesPageProps> = ({ searchQuery }) => {
-  const { user } = useAuth();
-  const [mediaList, setMediaList] = useState<MediaItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [activeFilter, setActiveFilter] = useState<'all' | 'image' | 'video'>('all');
-  const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
-
-  const fetchMedia = async () => {
-    setLoading(true);
-    const data = await mediaService.getMedia({
-      type: activeFilter,
-      currentUserId: user?.id,
-    });
-    setMediaList(data);
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    fetchMedia();
-  }, [activeFilter, user?.id]);
-
-  const handleLikeToggle = async (mediaId: string) => {
-    if (!user) return;
-    await mediaService.toggleLike(mediaId, user.id);
-    fetchMedia();
-  };
-
-  const handleDislikeToggle = async (mediaId: string) => {
-    if (!user) return;
-    await mediaService.toggleDislike(mediaId, user.id);
-    fetchMedia();
-  };
+export const MemoriesPage: React.FC = () => {
+  const {
+    mediaList,
+    loading,
+    activeFilter,
+    searchQuery,
+    selectedMedia,
+    setActiveFilter,
+    setSelectedMedia,
+    handleLikeToggle,
+    handleDislikeToggle,
+    handleDeleteMedia,
+  } = useMedia();
 
   const filteredMedia = mediaList.filter((m) => {
     if (!searchQuery) return true;
@@ -76,10 +51,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({ searchQuery }) => {
         onClose={() => setSelectedMedia(null)}
         onLikeToggle={handleLikeToggle}
         onDislikeToggle={handleDislikeToggle}
-        onMediaDeleted={() => {
-          setSelectedMedia(null);
-          fetchMedia();
-        }}
+        onMediaDeleted={(mediaId) => handleDeleteMedia(mediaId)}
       />
     </div>
   );

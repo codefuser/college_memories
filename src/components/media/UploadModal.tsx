@@ -4,20 +4,20 @@ import { Modal } from '../common/Modal';
 import type { Album } from '../../types';
 import { mediaService } from '../../services/mediaService';
 import { useAuth } from '../../context/AuthContext';
+import { useMedia } from '../../context/MediaContext';
 
 interface UploadModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onUploadSuccess: () => void;
 }
 
 export const UploadModal: React.FC<UploadModalProps> = ({
   isOpen,
   onClose,
-  onUploadSuccess,
 }) => {
   const { user, profile, permissions, isAdmin, canUploadImage, canUploadVideo, isUploadTemporarilyBlocked } =
     useAuth();
+  const { handleUploadSuccess } = useMedia();
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -40,8 +40,10 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   }, [isOpen]);
 
   const loadAlbums = async () => {
-    const albumList = await mediaService.getAlbums();
-    setAlbums(albumList);
+    try {
+      const albumList = await mediaService.getAlbums();
+      setAlbums(albumList);
+    } catch (e) {}
   };
 
   const resetForm = () => {
@@ -57,7 +59,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   const handleFileSelect = (file: File) => {
     setErrorMessage(null);
 
-    // Determine type
     const isImg = file.type.startsWith('image/');
     const isVid = file.type.startsWith('video/');
 
@@ -68,7 +69,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
     const type: 'image' | 'video' = isImg ? 'image' : 'video';
 
-    // 1. Permission checks before allowing preview
     if (!isAdmin) {
       if (profile?.status === 'blocked') {
         setErrorMessage('Your account is blocked. You cannot upload media.');
@@ -95,9 +95,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       }
     }
 
-    // 2. File Size Checks
-    const maxImgSize = 10 * 1024 * 1024; // 10MB
-    const maxVidSize = 100 * 1024 * 1024; // 100MB
+    const maxImgSize = 10 * 1024 * 1024;
+    const maxVidSize = 100 * 1024 * 1024;
     if (type === 'image' && file.size > maxImgSize) {
       setErrorMessage('Image size exceeds maximum limit of 10MB.');
       return;
@@ -109,8 +108,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
     setSelectedFile(file);
     setFileType(type);
-
-    // Create object URL for preview
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
   };
@@ -153,7 +150,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     if (result.error) {
       setErrorMessage(result.error);
     } else {
-      onUploadSuccess();
+      handleUploadSuccess(result.data);
       onClose();
     }
   };
@@ -181,7 +178,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             </div>
           )}
 
-          {/* Dropzone or Preview */}
           {!selectedFile ? (
             <div
               onDragOver={handleDragOver}
@@ -232,7 +228,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             </div>
           )}
 
-          {/* Caption Input */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">Caption</label>
             <textarea
@@ -244,7 +239,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             />
           </div>
 
-          {/* Album Selector */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">Add to Album (Optional)</label>
             <select
@@ -261,11 +255,10 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             </select>
           </div>
 
-          {/* Progress Bar */}
           {isUploading && (
             <div className="space-y-1">
               <div className="flex justify-between text-xs text-slate-400">
-                <span>Uploading to Supabase Storage...</span>
+                <span>Uploading memory...</span>
                 <span>{uploadProgress}%</span>
               </div>
               <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
@@ -277,7 +270,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             </div>
           )}
 
-          {/* Actions */}
           <div className="flex items-center justify-end space-x-3 pt-3 border-t border-slate-800">
             <button
               type="button"

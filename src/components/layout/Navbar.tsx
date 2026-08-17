@@ -1,15 +1,11 @@
 import React from 'react';
 import { Camera, Upload, LogOut, ShieldAlert, User as UserIcon } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useMedia } from '../../context/MediaContext';
 
-interface NavbarProps {
-  onOpenUpload?: () => void;
-  searchQuery?: string;
-  onSearchChange?: (query: string) => void;
-}
-
-export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, searchQuery, onSearchChange }) => {
+export const Navbar: React.FC = () => {
   const { profile, isAdmin, logout, canUploadImage, canUploadVideo } = useAuth();
+  const { openUpload, searchQuery, setSearchQuery } = useMedia();
   const showUploadBtn = canUploadImage() || canUploadVideo();
 
   return (
@@ -31,23 +27,22 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, searchQuery, onSea
         </div>
 
         {/* Search Input */}
-        {onSearchChange !== undefined && (
-          <div className="flex-1 max-w-md hidden sm:block">
-            <input
-              type="text"
-              placeholder="Search memories, captions, or members..."
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-              className="w-full bg-slate-950/60 border border-slate-800 rounded-full px-4 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/60 transition-all"
-            />
-          </div>
-        )}
+        <div className="flex-1 max-w-md hidden sm:block">
+          <input
+            type="text"
+            placeholder="Search memories, captions, or members..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-slate-950/60 border border-slate-800 rounded-full px-4 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/60 transition-all"
+          />
+        </div>
 
         {/* Actions & Profile */}
         <div className="flex items-center space-x-3">
-          {showUploadBtn && onOpenUpload && (
+          {showUploadBtn && (
             <button
-              onClick={onOpenUpload}
+              type="button"
+              onClick={openUpload}
               className="flex items-center space-x-2 px-3.5 py-1.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs sm:text-sm shadow-md shadow-indigo-600/20 transition-all active:scale-95"
             >
               <Upload className="w-4 h-4" />
@@ -55,7 +50,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, searchQuery, onSea
             </button>
           )}
 
-          {/* User Profile Pill */}
+          {/* Profile Pill */}
           <div className="flex items-center space-x-2 bg-slate-800/60 border border-slate-700/50 rounded-full px-3 py-1">
             <div className="w-7 h-7 rounded-full bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-300 font-semibold text-xs overflow-hidden">
               {profile?.profile_photo ? (
@@ -79,6 +74,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, searchQuery, onSea
 
           {/* Logout */}
           <button
+            type="button"
             onClick={() => logout()}
             title="Log out"
             className="p-2 rounded-full text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors"

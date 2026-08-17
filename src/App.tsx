@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { MediaProvider, useMedia } from './context/MediaContext';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar } from './components/layout/Sidebar';
 import { MobileNav } from './components/layout/MobileNav';
@@ -12,13 +13,13 @@ import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { UserManagementPage } from './pages/admin/UserManagementPage';
 import { MediaModerationPage } from './pages/admin/MediaModerationPage';
 import { ActivityLogsPage } from './pages/admin/ActivityLogsPage';
+import { UploadModal } from './components/media/UploadModal';
 import { ShieldAlert, Loader2 } from 'lucide-react';
 
 const AppContent: React.FC = () => {
   const { user, profile, loading, isAdmin, isBlocked } = useAuth();
+  const { isUploadOpen, closeUpload } = useMedia();
   const [currentTab, setCurrentTab] = useState<string>('feed');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isUploadOpen, setIsUploadOpen] = useState<boolean>(false);
 
   // Automatic Role-based Navigation Routing
   useEffect(() => {
@@ -60,70 +61,57 @@ const AppContent: React.FC = () => {
     );
   }
 
-  const renderTabContent = () => {
-    switch (currentTab) {
-      case 'feed':
-        return (
-          <DashboardPage
-            searchQuery={searchQuery}
-            isUploadOpen={isUploadOpen}
-            onCloseUpload={() => setIsUploadOpen(false)}
-            onOpenUpload={() => setIsUploadOpen(true)}
-          />
-        );
-      case 'memories':
-        return <MemoriesPage searchQuery={searchQuery} />;
-      case 'albums':
-        return <AlbumsPage />;
-      case 'profile':
-        return <ProfilePage />;
-      case 'admin-dashboard':
-        return isAdmin ? (
-          <AdminDashboardPage onNavigateTab={(t) => setCurrentTab(t)} />
-        ) : (
-          <DashboardPage
-            searchQuery={searchQuery}
-            isUploadOpen={isUploadOpen}
-            onCloseUpload={() => setIsUploadOpen(false)}
-            onOpenUpload={() => setIsUploadOpen(true)}
-          />
-        );
-      case 'admin-users':
-        return isAdmin ? <UserManagementPage /> : null;
-      case 'admin-media':
-        return isAdmin ? <MediaModerationPage /> : null;
-      case 'admin-logs':
-        return isAdmin ? <ActivityLogsPage /> : null;
-      default:
-        return (
-          <DashboardPage
-            searchQuery={searchQuery}
-            isUploadOpen={isUploadOpen}
-            onCloseUpload={() => setIsUploadOpen(false)}
-            onOpenUpload={() => setIsUploadOpen(true)}
-          />
-        );
-    }
-  };
-
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
       {/* Top Navbar */}
-      <Navbar
-        onOpenUpload={() => setIsUploadOpen(true)}
-        searchQuery={searchQuery}
-        onSearchChange={(q) => setSearchQuery(q)}
-      />
+      <Navbar />
 
       <div className="flex-1 max-w-7xl w-full mx-auto flex">
         {/* Desktop Sidebar */}
         <Sidebar currentTab={currentTab} onTabChange={(t) => setCurrentTab(t)} />
 
-        {/* Main Content View */}
+        {/* Main Content View Container with DOM preservation for 0ms tab switching */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 pb-20 lg:pb-8 max-w-full overflow-x-hidden">
-          {renderTabContent()}
+          <div className={currentTab === 'feed' ? 'block' : 'hidden'}>
+            <DashboardPage />
+          </div>
+
+          <div className={currentTab === 'memories' ? 'block' : 'hidden'}>
+            <MemoriesPage />
+          </div>
+
+          <div className={currentTab === 'albums' ? 'block' : 'hidden'}>
+            <AlbumsPage />
+          </div>
+
+          <div className={currentTab === 'profile' ? 'block' : 'hidden'}>
+            <ProfilePage />
+          </div>
+
+          {isAdmin && (
+            <>
+              <div className={currentTab === 'admin-dashboard' ? 'block' : 'hidden'}>
+                <AdminDashboardPage onNavigateTab={(t) => setCurrentTab(t)} />
+              </div>
+
+              <div className={currentTab === 'admin-users' ? 'block' : 'hidden'}>
+                <UserManagementPage />
+              </div>
+
+              <div className={currentTab === 'admin-media' ? 'block' : 'hidden'}>
+                <MediaModerationPage />
+              </div>
+
+              <div className={currentTab === 'admin-logs' ? 'block' : 'hidden'}>
+                <ActivityLogsPage />
+              </div>
+            </>
+          )}
         </main>
       </div>
+
+      {/* Shared Global Upload Modal */}
+      <UploadModal isOpen={isUploadOpen} onClose={closeUpload} />
 
       {/* Mobile Bottom Navigation Bar */}
       <MobileNav currentTab={currentTab} onTabChange={(t) => setCurrentTab(t)} />
@@ -134,7 +122,9 @@ const AppContent: React.FC = () => {
 export function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <MediaProvider>
+        <AppContent />
+      </MediaProvider>
     </AuthProvider>
   );
 }
