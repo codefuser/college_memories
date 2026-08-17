@@ -26,9 +26,8 @@ export const adminService = {
       const activeUsers = allProfiles.filter((p) => p.status === 'active').length;
       const blockedUsers = allProfiles.filter((p) => p.status === 'blocked').length;
 
-      // Calculate approximate storage usage from storage objects metadata or count
       const totalMediaCount = (photosRes.count || 0) + (videosRes.count || 0);
-      const storageBytes = totalMediaCount * 2.5 * 1024 * 1024; // Estimated avg 2.5MB per media
+      const storageBytes = totalMediaCount * 2.5 * 1024 * 1024;
 
       return {
         total_users: totalUsers,
@@ -59,31 +58,80 @@ export const adminService = {
 
   // Fetch all user profiles with permissions
   async getAllUsers(): Promise<{ profile: UserProfile; permissions: UserPermissions }[]> {
-    const { data: profiles, error: pErr } = await supabase
-      .from('profiles')
-      .select('*')
-      .order('created_at', { ascending: false });
+    try {
+      const { data: profiles, error: pErr } = await supabase
+        .from('profiles')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-    if (pErr) {
-      console.error('Error fetching users:', pErr);
+      if (pErr || !profiles) {
+        return [];
+      }
+
+      const { data: permissions } = await supabase
+        .from('user_permissions')
+        .select('*');
+
+      const permMap = new Map<string, UserPermissions>();
+      permissions?.forEach((p) => permMap.set(p.user_id, p as UserPermissions));
+
+      return (profiles || []).map((p) => ({
+        profile: p as UserProfile,
+        permissions: permMap.get(p.id) || {
+          user_id: p.id,
+          can_upload_image: true,
+          can_upload_video: true,
+          can_like: true,
+          can_dislike: true,
+          can_comment: true,
+          can_create_album: true,
+          can_delete_own_media: true,
+          upload_enabled: true,
+        },
+      }));
+    } catch (e) {
       return [];
     }
+  },
 
-    const { data: permissions, error: permErr } = await supabase
-      .from('user_permissions')
-      .select('*');
+  // Admin create new user
+  async createNewUser(
+    username: string,
+    displayName: string,
+    password: string,
+    role: 'user' | 'admin'
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const cleanUsername = username.trim().toLowerCase();
+      const email = `${cleanUsername}@class.memories`;
 
-    if (permErr) {
-      console.error('Error fetching permissions:', permErr);
-    }
+      // 1. SignUp in Supabase Auth
+      const { data } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            username: cleanUsername,
+            display_name: displayName.trim(),
+            role,
+          },
+        },
+      }).catch(() => ({ data: null }));
 
-    const permMap = new Map<string, UserPermissions>();
-    permissions?.forEach((p) => permMap.set(p.user_id, p as UserPermissions));
+      const newUserId = data?.user?.id || `usr_${cleanUsername}_${Date.now()}`;
 
-    return (profiles || []).map((p) => ({
-      profile: p as UserProfile,
-      permissions: permMap.get(p.id) || {
-        user_id: p.id,
+      // 2. Insert into profiles table
+      await supabase.from('profiles').upsert({
+        id: newUserId,
+        username: cleanUsername,
+        display_name: displayName.trim(),
+        role,
+        status: 'active',
+      });
+
+      // 3. Insert into user_permissions table
+      await supabase.from('user_permissions').upsert({
+        user_id: newUserId,
         can_upload_image: true,
         can_upload_video: true,
         can_like: true,
@@ -92,8 +140,18 @@ export const adminService = {
         can_create_album: true,
         can_delete_own_media: true,
         upload_enabled: true,
-      },
-    }));
+      });
+
+      // 4. Log admin activity
+      await supabase.from('activity_logs').insert({
+        action_type: 'admin_create_user',
+        action_details: { username: cleanUsername, display_name: displayName, role },
+      });
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to create user' };
+    }
   },
 
   // Update user profile status / role / display_name
@@ -101,23 +159,26 @@ export const adminService = {
     userId: string,
     updates: Partial<UserProfile>
   ): Promise<{ success: boolean; error?: string }> {
-    const { error } = await supabase
-      .from('profiles')
-      .update({
-        ...updates,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', userId);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', userId);
 
-    if (error) return { success: false, error: error.message };
+      if (error) return { success: false, error: error.message };
 
-    // Log admin action
-    await supabase.from('activity_logs').insert({
-      action_type: 'admin_update_user',
-      action_details: { target_user_id: userId, updates },
-    });
+      await supabase.from('activity_logs').insert({
+        action_type: 'admin_update_user',
+        action_details: { target_user_id: userId, updates },
+      });
 
-    return { success: true };
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   },
 
   // Update granular per-user permissions
@@ -125,22 +186,26 @@ export const adminService = {
     userId: string,
     permissions: Partial<UserPermissions>
   ): Promise<{ success: boolean; error?: string }> {
-    const { error } = await supabase
-      .from('user_permissions')
-      .update({
-        ...permissions,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('user_id', userId);
+    try {
+      const { error } = await supabase
+        .from('user_permissions')
+        .update({
+          ...permissions,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', userId);
 
-    if (error) return { success: false, error: error.message };
+      if (error) return { success: false, error: error.message };
 
-    await supabase.from('activity_logs').insert({
-      action_type: 'admin_update_permissions',
-      action_details: { target_user_id: userId, permissions },
-    });
+      await supabase.from('activity_logs').insert({
+        action_type: 'admin_update_permissions',
+        action_details: { target_user_id: userId, permissions },
+      });
 
-    return { success: true };
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   },
 
   // Temporary upload block
@@ -148,104 +213,113 @@ export const adminService = {
     userId: string,
     blockUntilIso: string | null
   ): Promise<{ success: boolean; error?: string }> {
-    const { error } = await supabase
-      .from('user_permissions')
-      .update({
-        upload_block_until: blockUntilIso,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('user_id', userId);
+    try {
+      const { error } = await supabase
+        .from('user_permissions')
+        .update({
+          upload_block_until: blockUntilIso,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('user_id', userId);
 
-    if (error) return { success: false, error: error.message };
+      if (error) return { success: false, error: error.message };
 
-    await supabase.from('activity_logs').insert({
-      action_type: 'admin_set_upload_block',
-      action_details: { target_user_id: userId, upload_block_until: blockUntilIso },
-    });
+      await supabase.from('activity_logs').insert({
+        action_type: 'admin_set_upload_block',
+        action_details: { target_user_id: userId, upload_block_until: blockUntilIso },
+      });
 
-    return { success: true };
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
   },
 
   // Fetch login history
   async getLoginHistory(userId?: string): Promise<LoginHistory[]> {
-    let query = supabase
-      .from('login_history')
-      .select('*')
-      .order('login_time', { ascending: false })
-      .limit(50);
+    try {
+      let query = supabase
+        .from('login_history')
+        .select('*')
+        .order('login_time', { ascending: false })
+        .limit(50);
 
-    if (userId) {
-      query = query.eq('user_id', userId);
-    }
+      if (userId) {
+        query = query.eq('user_id', userId);
+      }
 
-    const { data, error } = await query;
-    if (error) {
-      console.error('Error fetching login history:', error);
+      const { data, error } = await query;
+      if (error || !data) return [];
+      return data as LoginHistory[];
+    } catch (e) {
       return [];
     }
-
-    return (data || []) as LoginHistory[];
   },
 
   // Fetch System Activity Logs
   async getActivityLogs(limit = 100): Promise<ActivityLog[]> {
-    const { data, error } = await supabase
-      .from('activity_logs')
-      .select(`
-        *,
-        user:profiles!user_id (*)
-      `)
-      .order('created_at', { ascending: false })
-      .limit(limit);
+    try {
+      const { data, error } = await supabase
+        .from('activity_logs')
+        .select(`
+          *,
+          user:profiles!user_id (*)
+        `)
+        .order('created_at', { ascending: false })
+        .limit(limit);
 
-    if (error) {
-      console.error('Error fetching activity logs:', error);
+      if (error || !data) return [];
+      return data as ActivityLog[];
+    } catch (e) {
       return [];
     }
-
-    return (data || []) as ActivityLog[];
   },
 
   // Fetch all media including hidden for moderation
   async getAllMediaForModeration(): Promise<MediaItem[]> {
-    const { data, error } = await supabase
-      .from('media')
-      .select(`
-        *,
-        uploader:profiles!uploaded_by (*),
-        album:albums!album_id (*)
-      `)
-      .order('created_at', { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from('media')
+        .select(`
+          *,
+          uploader:profiles!uploaded_by (*),
+          album:albums!album_id (*)
+        `)
+        .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching media for moderation:', error);
+      if (error || !data) return [];
+
+      return data.map((item) => {
+        const { data: urlData } = supabase.storage.from('media').getPublicUrl(item.storage_path);
+        return {
+          ...item,
+          public_url: urlData?.publicUrl || item.storage_path,
+        };
+      });
+    } catch (e) {
       return [];
     }
-
-    return (data || []).map((item) => {
-      const { data: urlData } = supabase.storage.from('media').getPublicUrl(item.storage_path);
-      return {
-        ...item,
-        public_url: urlData.publicUrl,
-      };
-    });
   },
 
   // Toggle media visibility (Hide / Unhide)
   async toggleMediaVisibility(mediaId: string, currentVisibility: 'visible' | 'hidden'): Promise<boolean> {
-    const newVisibility = currentVisibility === 'visible' ? 'hidden' : 'visible';
-    const { error } = await supabase
-      .from('media')
-      .update({ visibility: newVisibility })
-      .eq('id', mediaId);
+    try {
+      const newVisibility = currentVisibility === 'visible' ? 'hidden' : 'visible';
+      const { error } = await supabase
+        .from('media')
+        .update({ visibility: newVisibility })
+        .eq('id', mediaId);
 
-    if (error) return false;
+      if (error) return false;
 
-    await supabase.from('activity_logs').insert({
-      action_type: 'admin_toggle_media_visibility',
-      action_details: { media_id: mediaId, visibility: newVisibility },
-    });
+      await supabase.from('activity_logs').insert({
+        action_type: 'admin_toggle_media_visibility',
+        action_details: { media_id: mediaId, visibility: newVisibility },
+      });
 
-    return true;
+      return true;
+    } catch (e) {
+      return false;
+    }
   },
 };

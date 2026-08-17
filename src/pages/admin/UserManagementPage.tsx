@@ -10,6 +10,8 @@ import {
   Eye,
   Edit3,
   History,
+  UserPlus,
+  AlertCircle,
 } from 'lucide-react';
 
 export const UserManagementPage: React.FC = () => {
@@ -20,6 +22,9 @@ export const UserManagementPage: React.FC = () => {
   // Modals state
   const [isPermModalOpen, setIsPermModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+
+  // History state
   const [loginHistory, setLoginHistory] = useState<LoginHistory[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
@@ -27,6 +32,14 @@ export const UserManagementPage: React.FC = () => {
   const [tempPermissions, setTempPermissions] = useState<Partial<UserPermissions>>({});
   const [tempBlockDate, setTempBlockDate] = useState<string>('');
   const [isSaving, setIsSaving] = useState(false);
+
+  // Form states for Create User
+  const [newUsername, setNewUsername] = useState('');
+  const [newDisplayName, setNewDisplayName] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState<'user' | 'admin'>('user');
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
     fetchUsers();
@@ -97,10 +110,38 @@ export const UserManagementPage: React.FC = () => {
     setLoadingHistory(false);
   };
 
+  const handleCreateUserSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUsername.trim() || !newDisplayName.trim() || !newPassword) return;
+
+    setIsCreating(true);
+    setCreateError(null);
+
+    const res = await adminService.createNewUser(
+      newUsername,
+      newDisplayName,
+      newPassword,
+      newRole
+    );
+
+    setIsCreating(false);
+
+    if (res.error) {
+      setCreateError(res.error);
+    } else {
+      setIsCreateModalOpen(false);
+      setNewUsername('');
+      setNewDisplayName('');
+      setNewPassword('');
+      setNewRole('user');
+      fetchUsers();
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h2 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
             <Users className="w-5 h-5 text-indigo-400" />
@@ -110,6 +151,14 @@ export const UserManagementPage: React.FC = () => {
             Control roles, user statuses, and individual security permissions
           </p>
         </div>
+
+        <button
+          onClick={() => setIsCreateModalOpen(true)}
+          className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition-all shadow-md shadow-indigo-600/20 active:scale-95"
+        >
+          <UserPlus className="w-4 h-4" />
+          <span>Create New Member</span>
+        </button>
       </div>
 
       {/* Users Table */}
@@ -286,6 +335,89 @@ export const UserManagementPage: React.FC = () => {
         </div>
       )}
 
+      {/* Create New User Modal */}
+      <Modal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        title="Create New Class Member"
+        maxWidth="md"
+      >
+        <form onSubmit={handleCreateUserSubmit} className="space-y-4">
+          {createError && (
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300 flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+              <span>{createError}</span>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Full Name / Display Name *</label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. John Doe"
+              value={newDisplayName}
+              onChange={(e) => setNewDisplayName(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Username *</label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. johndoe or user4"
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Password *</label>
+            <input
+              type="password"
+              required
+              placeholder="Initial account password (min 6 chars)"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Role</label>
+            <select
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value as 'user' | 'admin')}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+            >
+              <option value="user">Class Member (User)</option>
+              <option value="admin">Administrator (Admin)</option>
+            </select>
+          </div>
+
+          <div className="flex items-center justify-end space-x-3 pt-3 border-t border-slate-800">
+            <button
+              type="button"
+              onClick={() => setIsCreateModalOpen(false)}
+              className="px-4 py-2 text-xs text-slate-400 hover:text-white"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isCreating || !newUsername.trim() || !newDisplayName.trim() || !newPassword}
+              className="flex items-center space-x-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md disabled:opacity-50 transition-all"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>{isCreating ? 'Creating...' : 'Create Account'}</span>
+            </button>
+          </div>
+        </form>
+      </Modal>
+
       {/* Permissions & Block Settings Modal */}
       <Modal
         isOpen={isPermModalOpen}
@@ -375,7 +507,6 @@ export const UserManagementPage: React.FC = () => {
             </label>
           </div>
 
-          {/* Temporary Upload Block Expiration Picker */}
           <div className="pt-3 border-t border-slate-800 space-y-2">
             <label className="block text-xs font-semibold text-amber-300">
               Temporary Upload Block Expiration
