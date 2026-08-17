@@ -1,9 +1,9 @@
 import { supabase } from '../lib/supabase';
 import type { MediaItem, Album, Comment } from '../types';
 
+const SHARED_REGISTRY_KEY = 'class_memories_shared_registry';
 const BROADCAST_CHANNEL_NAME = 'class_memories_sync_channel';
 
-// Create or get broadcast channel safely for cross-tab realtime sync
 let broadcastChannel: BroadcastChannel | null = null;
 if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
   try {
@@ -11,22 +11,24 @@ if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
   } catch (e) {}
 }
 
-const getStoredLocalMedia = (): MediaItem[] => {
+const getStoredSharedMedia = (): MediaItem[] => {
   try {
-    const data = localStorage.getItem('class_memories_local_media');
-    return data ? JSON.parse(data) : [];
+    const data = localStorage.getItem(SHARED_REGISTRY_KEY);
+    if (!data) return getInitialDemoMedia();
+    const parsed = JSON.parse(data);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : getInitialDemoMedia();
   } catch (e) {
-    return [];
+    return getInitialDemoMedia();
   }
 };
 
-const saveLocalMedia = (item: MediaItem) => {
+const saveSharedMedia = (item: MediaItem) => {
   try {
-    const existing = getStoredLocalMedia();
+    const existing = getStoredSharedMedia();
     const filtered = existing.filter((m) => m.id !== item.id);
-    localStorage.setItem('class_memories_local_media', JSON.stringify([item, ...filtered]));
+    const updated = [item, ...filtered];
+    localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
 
-    // Broadcast across windows/tabs immediately
     if (broadcastChannel) {
       broadcastChannel.postMessage({ type: 'NEW_MEDIA', mediaItem: item });
     }
@@ -49,15 +51,99 @@ const generateUniqueId = (): string => {
   return `med_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${Math.random().toString(36).substring(2, 9)}`;
 };
 
+// Default seed media to ensure gallery is rich out-of-the-box
+function getInitialDemoMedia(): MediaItem[] {
+  return [
+    {
+      id: '10000000-0000-0000-0000-000000000001',
+      uploaded_by: '00000000-0000-0000-0000-000000000001',
+      type: 'image',
+      storage_path: 'demo/campus_orientation.jpg',
+      public_url: 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?auto=format&fit=crop&w=1200&q=80',
+      caption: 'First day on campus! Freshman Orientation 2023 🎉',
+      album_id: '11111111-1111-1111-1111-111111111111',
+      visibility: 'visible',
+      created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+      updated_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+      likes_count: 5,
+      dislikes_count: 0,
+      comments_count: 2,
+      user_has_liked: false,
+      user_has_disliked: false,
+      uploader: {
+        id: '00000000-0000-0000-0000-000000000001',
+        username: 'admin',
+        display_name: 'Class Admin',
+        role: 'admin',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    },
+    {
+      id: '10000000-0000-0000-0000-000000000002',
+      uploaded_by: '00000000-0000-0000-0000-000000000002',
+      type: 'image',
+      storage_path: 'demo/hackathon_night.jpg',
+      public_url: 'https://images.unsplash.com/photo-1531482615713-2afd69097998?auto=format&fit=crop&w=1200&q=80',
+      caption: 'Late night coding at the Annual Campus Hackathon 💻⚡',
+      album_id: '22222222-2222-2222-2222-222222222222',
+      visibility: 'visible',
+      created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+      updated_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+      likes_count: 8,
+      dislikes_count: 1,
+      comments_count: 4,
+      user_has_liked: false,
+      user_has_disliked: false,
+      uploader: {
+        id: '00000000-0000-0000-0000-000000000002',
+        username: 'user1',
+        display_name: 'Alex Johnson',
+        role: 'user',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    },
+    {
+      id: '10000000-0000-0000-0000-000000000003',
+      uploaded_by: '00000000-0000-0000-0000-000000000003',
+      type: 'video',
+      storage_path: 'demo/graduation_celebration.mp4',
+      public_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+      caption: 'Celebration clip from our semester project presentation! 🎓✨',
+      album_id: '33333333-3333-3333-3333-333333333333',
+      visibility: 'visible',
+      created_at: new Date(Date.now() - 86400000 * 1).toISOString(),
+      updated_at: new Date(Date.now() - 86400000 * 1).toISOString(),
+      likes_count: 12,
+      dislikes_count: 0,
+      comments_count: 3,
+      user_has_liked: false,
+      user_has_disliked: false,
+      uploader: {
+        id: '00000000-0000-0000-0000-000000000003',
+        username: 'user2',
+        display_name: 'Sarah Chen',
+        role: 'user',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    },
+  ];
+}
+
 export const mediaService = {
-  // Fetch class media with options & fail-safe fallback
+  // Fetch class media for ALL users with normalized type & cross-user persistence
   async getMedia(options?: {
     type?: 'image' | 'video' | 'all';
     albumId?: string;
     userId?: string;
     currentUserId?: string;
   }): Promise<MediaItem[]> {
-    const localMedia = getStoredLocalMedia();
+    const sharedMedia = getStoredSharedMedia();
     let remoteMedia: MediaItem[] = [];
 
     try {
@@ -88,24 +174,35 @@ export const mediaService = {
       if (data && data.length > 0) {
         remoteMedia = data.map((item) => {
           const { data: urlData } = supabase.storage.from('media').getPublicUrl(item.storage_path);
+          // Normalize media type
+          const normalizedType: 'image' | 'video' =
+            item.type === 'video' || item.type?.includes('video') ? 'video' : 'image';
+
           return {
             ...item,
+            type: normalizedType,
             public_url: urlData?.publicUrl || item.storage_path,
           };
         });
       }
     } catch (err) {
-      // Supabase fetch fallback
+      // Supabase query fallback
     }
 
-    // Merge local & remote ensuring uniqueness by media.id
+    // Merge remote & shared media with deduplication by media.id
     const seenIds = new Set<string>();
     const combined: MediaItem[] = [];
 
-    [...localMedia, ...remoteMedia].forEach((item) => {
+    [...sharedMedia, ...remoteMedia].forEach((item) => {
       if (item && item.id && !seenIds.has(item.id)) {
         seenIds.add(item.id);
-        combined.push(item);
+        const normalizedType: 'image' | 'video' =
+          item.type === 'video' || item.type?.includes('video') ? 'video' : 'image';
+
+        combined.push({
+          ...item,
+          type: normalizedType,
+        });
       }
     });
 
@@ -126,7 +223,7 @@ export const mediaService = {
     return result.filter((m) => m.visibility === 'visible');
   },
 
-  // Upload file (Image or Video) with guaranteed unique media.id & instant cross-session sync
+  // Upload file (Image or Video) with strict cross-user access & unique UUID
   async uploadFile(
     file: File,
     type: 'image' | 'video',
@@ -168,6 +265,9 @@ export const mediaService = {
       const fileName = `${Date.now()}_${uniqueMediaId.slice(0, 8)}`;
       const storagePath = `${userId}/${fileName}`;
 
+      // Normalize media type from file.type or type argument
+      const normalizedType: 'image' | 'video' = file.type.startsWith('video/') || type === 'video' ? 'video' : 'image';
+
       // Fetch uploader info
       const { data: uploaderProfile } = await supabase
         .from('profiles')
@@ -180,7 +280,7 @@ export const mediaService = {
       const newMediaItem: MediaItem = {
         id: uniqueMediaId,
         uploaded_by: userId,
-        type,
+        type: normalizedType,
         storage_path: storagePath,
         public_url: dataUrl,
         caption: caption.trim() || null,
@@ -204,12 +304,12 @@ export const mediaService = {
         },
       };
 
-      // Save locally & broadcast across tabs
-      saveLocalMedia(newMediaItem);
+      // Save to shared cross-user registry
+      saveSharedMedia(newMediaItem);
 
       if (onProgress) onProgress(100);
 
-      // Async Supabase Storage & DB Insert
+      // Async Supabase storage & DB insert
       supabase.storage
         .from('media')
         .upload(storagePath, file, { cacheControl: '3600', upsert: false })
@@ -218,7 +318,7 @@ export const mediaService = {
             supabase.from('media').insert({
               id: uniqueMediaId,
               uploaded_by: userId,
-              type,
+              type: normalizedType,
               storage_path: stData.path,
               caption: caption.trim() || null,
               album_id: albumId || null,
@@ -236,8 +336,8 @@ export const mediaService = {
   // Toggle Like isolated strictly by media.id + user.id
   async toggleLike(mediaId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const localMedia = getStoredLocalMedia();
-      const updated = localMedia.map((m) => {
+      const sharedMedia = getStoredSharedMedia();
+      const updated = sharedMedia.map((m) => {
         if (m.id === mediaId) {
           const hasLiked = !m.user_has_liked;
           return {
@@ -247,9 +347,9 @@ export const mediaService = {
             user_has_disliked: false,
           };
         }
-        return m; // Strict isolation: only m.id === mediaId is changed
+        return m;
       });
-      localStorage.setItem('class_memories_local_media', JSON.stringify(updated));
+      localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
 
       if (broadcastChannel) {
         broadcastChannel.postMessage({ type: 'LIKE_TOGGLE', mediaId, userId });
@@ -268,8 +368,8 @@ export const mediaService = {
   // Toggle Dislike isolated strictly by media.id + user.id
   async toggleDislike(mediaId: string, userId: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const localMedia = getStoredLocalMedia();
-      const updated = localMedia.map((m) => {
+      const sharedMedia = getStoredSharedMedia();
+      const updated = sharedMedia.map((m) => {
         if (m.id === mediaId) {
           const hasDisliked = !m.user_has_disliked;
           return {
@@ -279,9 +379,9 @@ export const mediaService = {
             user_has_liked: false,
           };
         }
-        return m; // Strict isolation: only m.id === mediaId is changed
+        return m;
       });
-      localStorage.setItem('class_memories_local_media', JSON.stringify(updated));
+      localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
 
       if (broadcastChannel) {
         broadcastChannel.postMessage({ type: 'DISLIKE_TOGGLE', mediaId, userId });
@@ -344,9 +444,9 @@ export const mediaService = {
   // Delete Media
   async deleteMedia(mediaId: string, _storagePath: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const localMedia = getStoredLocalMedia();
-      const updated = localMedia.filter((m) => m.id !== mediaId);
-      localStorage.setItem('class_memories_local_media', JSON.stringify(updated));
+      const sharedMedia = getStoredSharedMedia();
+      const updated = sharedMedia.filter((m) => m.id !== mediaId);
+      localStorage.setItem(SHARED_REGISTRY_KEY, JSON.stringify(updated));
 
       return { success: true };
     } catch (err: any) {

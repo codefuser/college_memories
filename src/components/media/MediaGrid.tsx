@@ -22,16 +22,24 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
   onLikeToggle,
   onDislikeToggle,
 }) => {
+  // Strict Client-Side Filter based on database media.type ('image' | 'video')
+  const displayedMedia = mediaList.filter((item) => {
+    if (!item) return false;
+    if (activeFilter === 'all') return true;
+    return item.type === activeFilter;
+  });
+
   return (
     <div className="space-y-6">
-      {/* Filter Tabs */}
+      {/* Filter Bar */}
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-2 bg-slate-900/60 p-1 rounded-2xl border border-slate-800">
           <button
+            type="button"
             onClick={() => onFilterChange('all')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+            className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
               activeFilter === 'all'
-                ? 'bg-indigo-600 text-white shadow-md'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -39,10 +47,11 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             <span>All Memories</span>
           </button>
           <button
+            type="button"
             onClick={() => onFilterChange('image')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+            className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
               activeFilter === 'image'
-                ? 'bg-indigo-600 text-white shadow-md'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -50,10 +59,11 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             <span>Photos</span>
           </button>
           <button
+            type="button"
             onClick={() => onFilterChange('video')}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+            className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
               activeFilter === 'video'
-                ? 'bg-indigo-600 text-white shadow-md'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
@@ -62,8 +72,9 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
           </button>
         </div>
 
+        {/* Filtered Count */}
         <div className="text-xs text-slate-400 font-medium">
-          {mediaList.length} {mediaList.length === 1 ? 'memory' : 'memories'}
+          {displayedMedia.length} {displayedMedia.length === 1 ? 'memory' : 'memories'}
         </div>
       </div>
 
@@ -78,21 +89,27 @@ export const MediaGrid: React.FC<MediaGridProps> = ({
             </div>
           ))}
         </div>
-      ) : mediaList.length === 0 ? (
-        /* Empty State */
+      ) : displayedMedia.length === 0 ? (
+        /* Empty Filter State */
         <div className="py-16 text-center bg-slate-900/30 border border-slate-800/60 rounded-3xl p-8 space-y-3">
           <div className="w-12 h-12 rounded-2xl bg-indigo-600/10 text-indigo-400 mx-auto flex items-center justify-center">
             <Sparkles className="w-6 h-6" />
           </div>
-          <h3 className="text-base font-semibold text-slate-200">No Memories Found</h3>
+          <h3 className="text-base font-semibold text-slate-200">
+            No {activeFilter === 'image' ? 'Photos' : activeFilter === 'video' ? 'Videos' : 'Memories'} Found
+          </h3>
           <p className="text-xs text-slate-400 max-w-sm mx-auto">
-            There are no photos or videos in this filter yet. Be the first class member to upload one!
+            {activeFilter === 'image'
+              ? 'There are no photo memories in the gallery yet.'
+              : activeFilter === 'video'
+              ? 'There are no video memories in the gallery yet.'
+              : 'Be the first class member to upload a memory!'}
           </p>
         </div>
       ) : (
-        /* Grid Display */
+        /* Grid Display of Filtered Media */
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {mediaList.map((item) => (
+          {displayedMedia.map((item) => (
             <MediaCard
               key={item.id}
               media={item}
