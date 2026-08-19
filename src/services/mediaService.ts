@@ -46,56 +46,42 @@ const getCleanPublicUrl = async (storagePath: string): Promise<string> => {
   return data?.publicUrl || '';
 };
 
-// Storage-to-Database Reconciliation helper function
+const isFileItem = (item: any): boolean => {
+  if (!item || !item.name) return false;
+  if (item.name.startsWith('.')) return false;
+  if (item.id && (item.metadata?.size !== undefined || item.metadata?.mimetype)) return true;
+  return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|mov|avi|mkv)$/i.test(item.name);
+};
+
+// Recursive Storage-to-Database Reconciliation helper function
 async function reconcileStorageFiles(existingPaths: Set<string>) {
   try {
-    const listFolder = async (path: string = '') => {
-      const { data: items } = await supabase.storage.from('media').list(path, { limit: 100 });
-      if (!items) return;
+    const processItems = async (items: any[], currentPath: string = '') => {
+      if (!items || items.length === 0) return;
 
       for (const item of items) {
         if (!item.name || item.name.startsWith('.')) continue;
-        const itemPath = path ? `${path}/${item.name}` : item.name;
+        const fullPath = currentPath ? `${currentPath}/${item.name}` : item.name;
 
-        // If item has metadata with size or mimetype, it is a file object
-        if (item.id && (item.metadata?.size !== undefined || item.metadata?.mimetype)) {
-          if (!existingPaths.has(itemPath)) {
-            await createReconciledMediaRow(itemPath, item);
-            existingPaths.add(itemPath);
+        if (isFileItem(item)) {
+          if (!existingPaths.has(fullPath)) {
+            await createReconciledMediaRow(fullPath, item);
+            existingPaths.add(fullPath);
           }
         } else {
-          // Subfolder (e.g. user-id or year or month)
-          const { data: subItems } = await supabase.storage.from('media').list(itemPath, { limit: 100 });
-          if (!subItems) continue;
-
-          for (const sub of subItems) {
-            if (!sub.name || sub.name.startsWith('.')) continue;
-            const subPath = `${itemPath}/${sub.name}`;
-
-            if (sub.id && (sub.metadata?.size !== undefined || sub.metadata?.mimetype)) {
-              if (!existingPaths.has(subPath)) {
-                await createReconciledMediaRow(subPath, sub);
-                existingPaths.add(subPath);
-              }
-            } else {
-              // Deeper subfolder (e.g. user-id/2026/08)
-              const { data: leafItems } = await supabase.storage.from('media').list(subPath, { limit: 100 });
-              leafItems?.forEach(async (leaf) => {
-                if (leaf.name && !leaf.name.startsWith('.')) {
-                  const leafPath = `${subPath}/${leaf.name}`;
-                  if (!existingPaths.has(leafPath)) {
-                    await createReconciledMediaRow(leafPath, leaf);
-                    existingPaths.add(leafPath);
-                  }
-                }
-              });
-            }
+          // Directory (e.g. uploader-id or year or month subfolder)
+          const { data: subItems } = await supabase.storage.from('media').list(fullPath, { limit: 100 });
+          if (subItems && subItems.length > 0) {
+            await processItems(subItems, fullPath);
           }
         }
       }
     };
 
-    await listFolder('');
+    const { data: rootItems } = await supabase.storage.from('media').list('', { limit: 100 });
+    if (rootItems && rootItems.length > 0) {
+      await processItems(rootItems, '');
+    }
   } catch (e) {
     console.warn('Storage reconciliation note:', e);
   }
@@ -123,7 +109,7 @@ async function createReconciledMediaRow(storagePath: string, fileObj: any) {
     }
 
     const fileName = parts[parts.length - 1] || '';
-    const isVideo = fileName.match(/\.(mp4|webm|mov|mkv)$/i) || fileObj.metadata?.mimetype?.startsWith('video');
+    const isVideo = fileName.match(/\.(mp4|webm|mov|mkv)$/i) || fileObj?.metadata?.mimetype?.startsWith('video');
     const mediaType = isVideo ? 'video' : 'image';
     const uniqueId = generateUniqueId();
 
