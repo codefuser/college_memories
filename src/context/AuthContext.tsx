@@ -258,7 +258,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const role = cleanUsername === 'admin' ? 'admin' : 'user';
     const displayName = cleanUsername === 'admin' ? 'Class Admin' : cleanUsername.charAt(0).toUpperCase() + cleanUsername.slice(1);
 
-    // 1. Check Demo Account match for instant seamless login
     const demoUser = MOCK_DEMO_USERS[cleanUsername];
     if (demoUser) {
       setProfile(demoUser.profile);
@@ -268,6 +267,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'class_memories_session',
         JSON.stringify({ profile: demoUser.profile, permissions: demoUser.permissions })
       );
+
+      // Ensure demo user profile & permissions exist in Supabase DB for FK constraints
+      (async () => {
+        try {
+          await supabase.from('profiles').upsert(demoUser.profile);
+          await supabase.from('user_permissions').upsert(demoUser.permissions);
+        } catch (e) {}
+      })();
 
       // Attempt background Supabase Auth without blocking UI
       supabase.auth.signInWithPassword({
@@ -295,8 +302,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // 3. Fallback login for any member login when Supabase network fetch encounters an issue
+    const fallbackId = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : '00000000-0000-0000-0000-000000000002';
+
     const fallbackProfile: UserProfile = {
-      id: `usr_${cleanUsername}_${Date.now()}`,
+      id: fallbackId,
       username: cleanUsername,
       display_name: displayName,
       role: role as any,
@@ -323,6 +334,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       'class_memories_session',
       JSON.stringify({ profile: fallbackProfile, permissions: fallbackPerms })
     );
+
+    // Upsert fallback profile into Supabase DB
+    (async () => {
+      try {
+        await supabase.from('profiles').upsert(fallbackProfile);
+        await supabase.from('user_permissions').upsert(fallbackPerms);
+      } catch (e) {}
+    })();
 
     return {};
   };

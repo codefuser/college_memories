@@ -63,17 +63,10 @@ export const MediaProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setLoading(false);
   }, [user?.id]);
 
-  // Initial Load on Auth User change
+  // Initial Load on Mount & Auth User change
   useEffect(() => {
-    if (user) {
-      fetchMedia();
-      fetchAlbums();
-    } else {
-      setMediaList([]);
-      setAlbumsList([]);
-      setLoading(false);
-      hasInitialLoaded.current = false;
-    }
+    fetchMedia();
+    fetchAlbums();
   }, [user?.id, fetchMedia, fetchAlbums]);
 
   // Cross-Tab BroadcastChannel Realtime Sync Handler

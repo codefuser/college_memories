@@ -22,8 +22,8 @@ const ensureValidUuid = (id: string): string => {
   return `00000000-0000-0000-0000-${hex}`;
 };
 
-// Helper function to resolve exact 100% working Supabase Storage URLs
-const getCleanPublicUrl = (storagePath: string): string => {
+// Helper function to resolve exact 100% working Supabase Storage URLs (Public & Private buckets)
+const getCleanPublicUrl = async (storagePath: string): Promise<string> => {
   if (!storagePath) return '';
   if (storagePath.startsWith('http://') || storagePath.startsWith('https://') || storagePath.startsWith('data:')) {
     return storagePath;
@@ -32,9 +32,113 @@ const getCleanPublicUrl = (storagePath: string): string => {
   if (cleanPath.startsWith('media/')) {
     cleanPath = cleanPath.substring(6);
   }
+
+  // 1. Attempt creating a signed URL for private bucket compatibility
+  try {
+    const { data: signedData } = await supabase.storage.from('media').createSignedUrl(cleanPath, 86400 * 365);
+    if (signedData?.signedUrl) {
+      return signedData.signedUrl;
+    }
+  } catch (e) {}
+
+  // 2. Fallback to public URL
   const { data } = supabase.storage.from('media').getPublicUrl(cleanPath);
   return data?.publicUrl || '';
 };
+
+// Storage-to-Database Reconciliation helper function
+async function reconcileStorageFiles(existingPaths: Set<string>) {
+  try {
+    const listFolder = async (path: string = '') => {
+      const { data: items } = await supabase.storage.from('media').list(path, { limit: 100 });
+      if (!items) return;
+
+      for (const item of items) {
+        if (!item.name || item.name.startsWith('.')) continue;
+        const itemPath = path ? `${path}/${item.name}` : item.name;
+
+        // If item has metadata with size or mimetype, it is a file object
+        if (item.id && (item.metadata?.size !== undefined || item.metadata?.mimetype)) {
+          if (!existingPaths.has(itemPath)) {
+            await createReconciledMediaRow(itemPath, item);
+            existingPaths.add(itemPath);
+          }
+        } else {
+          // Subfolder (e.g. user-id or year or month)
+          const { data: subItems } = await supabase.storage.from('media').list(itemPath, { limit: 100 });
+          if (!subItems) continue;
+
+          for (const sub of subItems) {
+            if (!sub.name || sub.name.startsWith('.')) continue;
+            const subPath = `${itemPath}/${sub.name}`;
+
+            if (sub.id && (sub.metadata?.size !== undefined || sub.metadata?.mimetype)) {
+              if (!existingPaths.has(subPath)) {
+                await createReconciledMediaRow(subPath, sub);
+                existingPaths.add(subPath);
+              }
+            } else {
+              // Deeper subfolder (e.g. user-id/2026/08)
+              const { data: leafItems } = await supabase.storage.from('media').list(subPath, { limit: 100 });
+              leafItems?.forEach(async (leaf) => {
+                if (leaf.name && !leaf.name.startsWith('.')) {
+                  const leafPath = `${subPath}/${leaf.name}`;
+                  if (!existingPaths.has(leafPath)) {
+                    await createReconciledMediaRow(leafPath, leaf);
+                    existingPaths.add(leafPath);
+                  }
+                }
+              });
+            }
+          }
+        }
+      }
+    };
+
+    await listFolder('');
+  } catch (e) {
+    console.warn('Storage reconciliation note:', e);
+  }
+}
+
+async function createReconciledMediaRow(storagePath: string, fileObj: any) {
+  try {
+    const parts = storagePath.split('/');
+    let uploaderId = '00000000-0000-0000-0000-000000000001'; // Default Admin UUID
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (parts.length > 1 && uuidRegex.test(parts[0])) {
+      uploaderId = parts[0];
+    }
+
+    // Ensure uploader profile exists in profiles table for FK constraint
+    const { data: existingProf } = await supabase.from('profiles').select('id').eq('id', uploaderId).maybeSingle();
+    if (!existingProf) {
+      await supabase.from('profiles').upsert({
+        id: uploaderId,
+        username: 'classmember',
+        display_name: 'Class Member',
+        role: 'user',
+        status: 'active',
+      });
+    }
+
+    const fileName = parts[parts.length - 1] || '';
+    const isVideo = fileName.match(/\.(mp4|webm|mov|mkv)$/i) || fileObj.metadata?.mimetype?.startsWith('video');
+    const mediaType = isVideo ? 'video' : 'image';
+    const uniqueId = generateUniqueId();
+
+    await supabase.from('media').upsert({
+      id: uniqueId,
+      uploaded_by: uploaderId,
+      type: mediaType,
+      storage_path: storagePath,
+      caption: 'Uploaded Class Memory',
+      visibility: 'visible',
+    });
+  } catch (err) {
+    console.warn('Reconcile row creation note:', err);
+  }
+}
 
 export const mediaService = {
   // Fetch REAL class media ONLY from Supabase Database & Storage without brittle joins
@@ -63,10 +167,21 @@ export const mediaService = {
         query = query.eq('uploaded_by', ensureValidUuid(options.userId));
       }
 
-      const { data, error } = await query;
+      let { data, error } = await query;
 
-      if (error || !data || data.length === 0) {
-        console.warn('Supabase media query note:', error?.message || '0 rows');
+      if (error) {
+        console.warn('Supabase media query error note:', error.message);
+      }
+
+      // Reconcile existing Supabase Storage files if database table lacks them
+      const existingPaths = new Set(data?.map((m) => m.storage_path) || []);
+      await reconcileStorageFiles(existingPaths);
+
+      // Re-fetch media after reconciliation to ensure fresh list
+      const freshRes = await query;
+      data = freshRes.data || data || [];
+
+      if (data.length === 0) {
         return [];
       }
 
@@ -95,7 +210,7 @@ export const mediaService = {
       // Map every single media record to a 100% valid MediaItem with resolved URL
       const resolvedMediaItems = await Promise.all(
         data.map(async (item) => {
-          const publicUrl = getCleanPublicUrl(item.storage_path);
+          const publicUrl = await getCleanPublicUrl(item.storage_path);
 
           const [likesCountRes, dislikesCountRes, commentsCountRes] = await Promise.all([
             supabase.from('media_likes').select('id', { count: 'exact', head: true }).eq('media_id', item.id),
@@ -183,7 +298,7 @@ export const mediaService = {
       const normalizedType: 'image' | 'video' =
         file.type.startsWith('video/') || type === 'video' ? 'video' : 'image';
 
-      // Fetch uploader profile safely
+      // Fetch uploader profile safely and guarantee profile exists in public.profiles table before DB insert
       let uploaderProfile: UserProfile | null = null;
       try {
         const { data: prof } = await supabase
@@ -195,6 +310,20 @@ export const mediaService = {
       } catch (e) {}
 
       const uploaderDisplayName = uploaderProfile?.display_name || (rawUserId.includes('admin') ? 'Class Admin' : 'Class Member');
+
+      if (!uploaderProfile) {
+        const newProf: UserProfile = {
+          id: userId,
+          username: rawUserId.toLowerCase().replace(/[^a-z0-9]/g, '') || 'user',
+          display_name: uploaderDisplayName,
+          role: rawUserId.includes('admin') ? 'admin' : 'user',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        await supabase.from('profiles').upsert(newProf);
+        uploaderProfile = newProf;
+      }
 
       // 1. Upload file to Supabase Storage bucket 'media'
       const { data: storageData, error: storageError } = await supabase.storage
@@ -215,7 +344,7 @@ export const mediaService = {
       const finalStoragePath = storageData.path;
 
       // 2. Insert metadata row into Supabase PostgreSQL 'media' table
-      const { data: dbData, error: dbError } = await supabase
+      let { data: dbData, error: dbError } = await supabase
         .from('media')
         .insert({
           id: uniqueMediaId,
@@ -230,12 +359,40 @@ export const mediaService = {
         .single();
 
       if (dbError) {
-        console.warn('Supabase DB insert note (handled safely):', dbError);
+        console.error('Supabase DB insert error, retrying with profile guarantee:', dbError);
+        // Ensure profile again and retry DB insert
+        await supabase.from('profiles').upsert({
+          id: userId,
+          username: rawUserId.toLowerCase().replace(/[^a-z0-9]/g, '') || 'user',
+          display_name: uploaderDisplayName,
+          role: rawUserId.includes('admin') ? 'admin' : 'user',
+          status: 'active',
+        });
+
+        const retry = await supabase
+          .from('media')
+          .insert({
+            id: uniqueMediaId,
+            uploaded_by: userId,
+            type: normalizedType,
+            storage_path: finalStoragePath,
+            caption: caption.trim() || null,
+            album_id: albumId || null,
+            visibility: 'visible',
+          })
+          .select()
+          .single();
+
+        dbData = retry.data;
+        if (retry.error) {
+          console.error('Supabase DB insert retry failed:', retry.error);
+          return { error: `Database entry creation failed: ${retry.error.message}` };
+        }
       }
 
       if (onProgress) onProgress(90); // Stage 4: URL Resolution
 
-      const finalUrl = getCleanPublicUrl(dbData?.storage_path || finalStoragePath);
+      const finalUrl = await getCleanPublicUrl(dbData?.storage_path || finalStoragePath);
 
       if (onProgress) onProgress(100);
 
